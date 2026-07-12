@@ -22,17 +22,31 @@ from agents.attribution_agent import PollutionAttributionAgent
 from agents.advisory_agent import CitizenAdvisoryAgent, CitizenProfile
 from agents.trend_agent import TrendAnalysisAgent
 from data.mock_data import generate_hotspot_features, generate_historical_aqi, FESTIVALS_2025_26
+from db.database import is_db_configured
 
 app = FastAPI(title="AirPulse — Features 2, 5, 10")
 
-# --- Startup: train the attribution model once on mock data ---
+USING_REAL_DB = is_db_configured()
+
+if USING_REAL_DB:
+    # Real Neon data. Note: attribution training still needs labeled data --
+    # if your hotspots table doesn't have source_label populated yet, keep
+    # training on mock data (which has labels) and only swap inference/trend
+    # data sources to real DB. Adjust the two lines below once you have
+    # labeled hotspot data to train on.
+    from db.repository import fetch_hotspot_features, fetch_historical_aqi
+    _training_df = generate_hotspot_features()  # swap to a labeled real query once available
+    _historical_df = fetch_historical_aqi()
+else:
+    _training_df = generate_hotspot_features()
+    _historical_df = generate_historical_aqi()
+
+# --- Startup: train the attribution model once ---
 attribution_agent = PollutionAttributionAgent()
-_training_report = attribution_agent.train(generate_hotspot_features())
+_training_report = attribution_agent.train(_training_df)
 
 advisory_agent = CitizenAdvisoryAgent()
 trend_agent = TrendAnalysisAgent()
-
-_historical_df = generate_historical_aqi()
 
 
 # ---------- Feature 2: Source Attribution ----------
@@ -47,11 +61,20 @@ class HotspotInput(BaseModel):
     pm25: float
 
 
+class HotspotInputWithId(HotspotInput):
+    hotspot_id: Optional[int] = None  # pass this to persist the result back to Neon
+
+
 @app.post("/api/attribution")
-def attribute_hotspot(hotspot: HotspotInput):
+def attribute_hotspot(hotspot: HotspotInputWithId):
     import pandas as pd
-    row = pd.Series(hotspot.dict())
+    row = pd.Series(hotspot.dict(exclude={"hotspot_id"}))
     result = attribution_agent.attribute(row)
+
+    if USING_REAL_DB and hotspot.hotspot_id is not None:
+        from db.repository import insert_hotspot_attribution
+        insert_hotspot_attribution(hotspot.hotspot_id, result.predicted_source, result.confidence)
+
     return {
         "ward": result.ward,
         "predicted_source": result.predicted_source,
@@ -89,6 +112,11 @@ def get_advisory(req: AdvisoryRequest):
         outdoor_worker=req.outdoor_worker,
     )
     advisory = advisory_agent.generate(profile, req.forecast_aqi)
+
+    if USING_REAL_DB:
+        from db.repository import insert_advisory
+        insert_advisory(advisory.ward, advisory.language, advisory.message, advisory.risk_level)
+
     return {
         "user_id": advisory.user_id,
         "ward": advisory.ward,
