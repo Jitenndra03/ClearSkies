@@ -1,9 +1,12 @@
 """
 main.py
 -------
-FastAPI wiring for System Features 2, 5, and 10 so the frontend team can
-hit real endpoints immediately, using mock data until the ingestion
-pipeline is connected.
+FastAPI wiring for System Features 1, 2, 3, 4, 5, 7, and 11 so the frontend
+team can hit real endpoints immediately, using mock data until the
+ingestion pipeline is connected.
+
+(Note: Trend Analysis is Feature 7 in the plan's Section 2 list, not
+Feature 10 as an earlier version of this file said -- fixed here.)
 
 Run: uvicorn api.main:app --reload --port 8000
 Docs: http://localhost:8000/docs
@@ -12,7 +15,7 @@ Docs: http://localhost:8000/docs
 import sys
 import os
 
-sys.path.append(os.path.join(os.path.dirname(__file__)))
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -21,10 +24,22 @@ from typing import Optional, List
 from agents.attribution_agent import PollutionAttributionAgent
 from agents.advisory_agent import CitizenAdvisoryAgent, CitizenProfile
 from agents.trend_agent import TrendAnalysisAgent
-from data.mock_data import generate_hotspot_features, generate_historical_aqi, FESTIVALS_2025_26
+from agents.prediction_agent import AQIPredictionAgent
+from agents.recommendation_agent import RecommendationAgent
+from agents.enforcement_agent import EnforcementPrioritizationAgent
+from agents.emergency_agent import EmergencyDetectionAgent
+from data.mock_data import (
+    generate_hotspot_features,
+    generate_historical_aqi,
+    generate_prediction_training_data,
+    generate_current_conditions,
+    generate_emission_sources,
+    generate_realtime_readings,
+    FESTIVALS_2025_26,
+)
 from db.database import is_db_configured
 
-app = FastAPI(title="AirPulse — Features 2, 5, 10")
+app = FastAPI(title="AirPulse ")
 
 USING_REAL_DB = is_db_configured()
 
@@ -41,12 +56,21 @@ else:
     _training_df = generate_hotspot_features()
     _historical_df = generate_historical_aqi()
 
-# --- Startup: train the attribution model once ---
+# --- Startup: train models once ---
 attribution_agent = PollutionAttributionAgent()
 _training_report = attribution_agent.train(_training_df)
 
+prediction_agent = AQIPredictionAgent()
+_prediction_training_df = generate_prediction_training_data()  # swap to real historical query once you have enough real days
+_prediction_metrics = prediction_agent.train(_prediction_training_df)
+
 advisory_agent = CitizenAdvisoryAgent()
 trend_agent = TrendAnalysisAgent()
+recommendation_agent = RecommendationAgent()
+enforcement_agent = EnforcementPrioritizationAgent()
+emergency_agent = EmergencyDetectionAgent()
+
+_emission_sources_df = generate_emission_sources()  # swap to a real `emission_sources` table query
 
 
 # ---------- Feature 2: Source Attribution ----------
@@ -127,7 +151,7 @@ def get_advisory(req: AdvisoryRequest):
     }
 
 
-# ---------- Feature 10: Trend Analysis ----------
+# ---------- Feature 7: Trend Analysis ----------
 
 @app.get("/api/trends/{ward}")
 def get_ward_trends(ward: str):
@@ -163,4 +187,159 @@ def get_all_trends():
 
 @app.get("/")
 def root():
-    return {"status": "AirPulse features 2 (attribution), 5 (advisory), 10 (trends) are live"}
+    return {"status": "AirPulse features 1 (prediction), 2 (attribution), 3 (recommendation), 4 (enforcement), 5 (advisory), 7 (trends), 11 (emergency) are live"}
+
+
+# ---------- Feature 1: Hyperlocal AQI Prediction ----------
+
+@app.get("/api/forecast/{ward}")
+def get_forecast(ward: str, horizon_hr: int = 24):
+    conditions = generate_current_conditions(ward)  # swap to a real current-conditions query once weather/traffic ingestion is live
+    forecast = prediction_agent.predict(conditions, horizon_hr)
+    return {
+        "ward": forecast.ward,
+        "horizon_hr": forecast.horizon_hr,
+        "predicted_aqi": forecast.predicted_aqi,
+        "lower_bound": forecast.lower_bound,
+        "upper_bound": forecast.upper_bound,
+        "confidence": forecast.confidence,
+    }
+
+
+@app.get("/api/forecast/{ward}/multi-horizon")
+def get_multi_horizon_forecast(ward: str):
+    conditions = generate_current_conditions(ward)
+    forecasts = prediction_agent.predict_multi_horizon(conditions)
+    return [
+        {
+            "horizon_hr": f.horizon_hr,
+            "predicted_aqi": f.predicted_aqi,
+            "lower_bound": f.lower_bound,
+            "upper_bound": f.upper_bound,
+            "confidence": f.confidence,
+        }
+        for f in forecasts
+    ]
+
+
+@app.get("/api/forecast/model-report")
+def get_forecast_model_report():
+    return _prediction_metrics
+
+
+# ---------- Feature 3: AI Intervention Recommendation Engine ----------
+
+class RecommendationRequest(BaseModel):
+    ward: str
+    source: str  # traffic / construction / industrial / dust / stubble_burning
+    forecast_aqi: float
+    festival_context: Optional[str] = None
+
+
+@app.post("/api/recommendations")
+def get_recommendations(req: RecommendationRequest):
+    bundle = recommendation_agent.recommend(
+        ward=req.ward, source=req.source, forecast_aqi=req.forecast_aqi, festival_context=req.festival_context
+    )
+    return {
+        "ward": bundle.ward,
+        "source": bundle.source,
+        "severity": bundle.severity,
+        "forecast_aqi": bundle.forecast_aqi,
+        "festival_context": bundle.festival_context,
+        "actions": [
+            {"action": a.action, "responsible_role": a.responsible_role, "urgency_hours": a.urgency_hours}
+            for a in bundle.actions
+        ],
+    }
+
+
+@app.get("/api/recommendations/{ward}")
+def get_recommendations_from_pipeline(ward: str):
+    """
+    Convenience endpoint: chains attribution + forecast automatically to
+    produce recommendations without the caller needing to run each agent
+    manually first. Uses each ward's synthetic hotspot row for attribution.
+    """
+    import pandas as pd
+    ward_hotspots = _training_df[_training_df["ward"] == ward]
+    if ward_hotspots.empty:
+        raise HTTPException(status_code=404, detail=f"No hotspot data for ward '{ward}'")
+    attribution = attribution_agent.attribute(ward_hotspots.iloc[0])
+
+    conditions = generate_current_conditions(ward)
+    forecast = prediction_agent.predict(conditions, horizon_hr=24)
+
+    bundle = recommendation_agent.recommend_from_attribution_and_forecast(attribution, forecast)
+    return {
+        "ward": bundle.ward,
+        "attributed_source": attribution.predicted_source,
+        "attribution_confidence": attribution.confidence,
+        "forecast_aqi": forecast.predicted_aqi,
+        "severity": bundle.severity,
+        "actions": [
+            {"action": a.action, "responsible_role": a.responsible_role, "urgency_hours": a.urgency_hours}
+            for a in bundle.actions
+        ],
+    }
+
+
+# ---------- Feature 4: Smart Enforcement Prioritization ----------
+
+@app.get("/api/enforcement/queue")
+def get_enforcement_queue(top_n: int = 10):
+    # Ward severity comes from the Prediction Agent's forecast for each ward.
+    severity_map = {}
+    for ward in _emission_sources_df["ward"].unique():
+        conditions = generate_current_conditions(ward)
+        forecast = prediction_agent.predict(conditions, horizon_hr=24)
+        severity_map[ward] = recommendation_agent.severity_band(forecast.predicted_aqi)
+
+    ranked = enforcement_agent.prioritize(_emission_sources_df, severity_map)
+    return [
+        {
+            "source_id": r.source_id,
+            "name": r.name,
+            "ward": r.ward,
+            "type": r.type,
+            "priority_score": r.priority_score,
+            "reasons": r.reasons,
+        }
+        for r in ranked[:top_n]
+    ]
+
+
+# ---------- Feature 11: Emergency Pollution Detection ----------
+
+@app.get("/api/emergency/check/{ward}")
+def check_emergency(ward: str, simulate_spike: bool = False):
+    readings = generate_realtime_readings(ward, spike=simulate_spike)  # swap to a real live readings query
+    alert = emergency_agent.check(readings)
+    if alert is None:
+        return {"ward": ward, "emergency": False}
+    return {
+        "ward": alert.ward,
+        "emergency": True,
+        "triggered_at": alert.triggered_at,
+        "trigger_type": alert.trigger_type,
+        "current_aqi": alert.current_aqi,
+        "aqi_delta": alert.aqi_delta,
+        "window_minutes": alert.window_minutes,
+        "message": alert.message,
+    }
+
+
+@app.get("/api/emergency/check-all")
+def check_all_emergencies():
+    from data.mock_data import WARDS
+    readings_by_ward = {w: generate_realtime_readings(w, spike=(w == "Ward-5")) for w in WARDS}
+    alerts = emergency_agent.check_all_wards(readings_by_ward)
+    return [
+        {
+            "ward": a.ward,
+            "trigger_type": a.trigger_type,
+            "current_aqi": a.current_aqi,
+            "message": a.message,
+        }
+        for a in alerts
+    ]
