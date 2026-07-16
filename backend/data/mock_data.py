@@ -91,6 +91,95 @@ def generate_citizen_profile(user_id: str) -> dict:
     return random.choice(profiles)
 
 
+def generate_prediction_training_data(days: int = 400) -> pd.DataFrame:
+    """
+    Historical rows with weather + traffic + lag features + target AQI,
+    for training the LightGBM forecasting model (Feature 1).
+    """
+    hist = generate_historical_aqi(days=days)
+    hist["date"] = pd.to_datetime(hist["date"])
+    hist = hist.sort_values(["ward", "date"])
+
+    rows = []
+    for ward, group in hist.groupby("ward"):
+        group = group.reset_index(drop=True)
+        for i in range(7, len(group)):  # need 7 days of lag history
+            row = group.iloc[i]
+            date = row["date"]
+            rows.append({
+                "ward": ward,
+                "date": date,
+                "day_of_week": date.weekday(),
+                "month": date.month,
+                "temp_c": np.random.uniform(10, 35) - (5 if date.month in (12, 1, 2) else 0),
+                "humidity_pct": np.random.uniform(30, 85),
+                "wind_speed_kmh": np.random.uniform(2, 25),
+                "wind_direction_deg": np.random.uniform(0, 360),
+                "traffic_density_idx": np.random.uniform(0.2, 0.9),
+                "aqi_lag_1": group.iloc[i - 1]["aqi"],
+                "aqi_lag_7": group.iloc[i - 7]["aqi"],
+                "aqi": row["aqi"],  # target
+            })
+    return pd.DataFrame(rows)
+
+
+def generate_current_conditions(ward: str) -> dict:
+    """Current weather/traffic snapshot + recent AQI lags, used as inference input for the Prediction Agent."""
+    return {
+        "ward": ward,
+        "day_of_week": datetime.now().weekday(),
+        "month": datetime.now().month,
+        "temp_c": np.random.uniform(15, 30),
+        "humidity_pct": np.random.uniform(35, 80),
+        "wind_speed_kmh": np.random.uniform(3, 20),
+        "wind_direction_deg": np.random.uniform(0, 360),
+        "traffic_density_idx": np.random.uniform(0.3, 0.8),
+        "aqi_lag_1": np.random.uniform(80, 220),
+        "aqi_lag_7": np.random.uniform(80, 220),
+    }
+
+
+def generate_emission_sources(n: int = 20) -> pd.DataFrame:
+    """
+    Registered emission sources with permit + inspection history, used by
+    the Enforcement Prioritization Agent (Feature 4).
+    """
+    types = ["industry", "construction", "waste_burning_site", "diesel_depot"]
+    rows = []
+    for i in range(n):
+        rows.append({
+            "id": i + 1,
+            "ward": random.choice(WARDS),
+            "type": random.choice(types),
+            "name": f"Site-{i+1}",
+            "permit_status": random.choice(["valid", "expired", "unregistered"]),
+            "days_since_last_inspection": random.choice([5, 15, 45, 90, 200, 400]),
+            "distance_to_nearest_hotspot_km": round(np.random.uniform(0.1, 3.0), 2),
+        })
+    return pd.DataFrame(rows)
+
+
+def generate_realtime_readings(ward: str, spike: bool = True) -> pd.DataFrame:
+    """
+    Sub-hourly AQI readings over the last few hours for a single ward, used
+    by the Emergency Pollution Detection Agent (Feature 11). If spike=True,
+    injects a sudden jump in the most recent readings to simulate a real
+    emergency (e.g. stubble burning plume, industrial upset) for demo/testing.
+    """
+    now = datetime.now()
+    timestamps = [now - timedelta(minutes=15 * i) for i in range(12)][::-1]  # last 3 hours, 15-min steps
+    base = np.random.uniform(90, 130)
+    readings = [base + np.random.normal(0, 5) for _ in timestamps]
+
+    if spike:
+        # last 3 readings ramp up sharply -- simulates a fast-onset emergency
+        readings[-3] += 60
+        readings[-2] += 130
+        readings[-1] += 220
+
+    return pd.DataFrame({"ward": ward, "timestamp": timestamps, "aqi": [round(r, 1) for r in readings]})
+
+
 def generate_historical_aqi(days: int = 400) -> pd.DataFrame:
     """
     Generates a daily AQI time series per ward with:
