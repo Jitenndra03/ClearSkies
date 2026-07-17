@@ -24,6 +24,7 @@ from typing import Optional, List
 from agents.attribution_agent import PollutionAttributionAgent
 from agents.advisory_agent import CitizenAdvisoryAgent, CitizenProfile
 from agents.trend_agent import TrendAnalysisAgent
+<<<<<<< HEAD
 from agents.prediction_agent import AQIPredictionAgent
 from agents.recommendation_agent import RecommendationAgent
 from agents.enforcement_agent import EnforcementPrioritizationAgent
@@ -40,6 +41,20 @@ from data.mock_data import (
 from db.database import is_db_configured
 
 app = FastAPI(title="AirPulse ")
+=======
+from agents.heatmap_agent import HeatmapAgent
+from agents.comparison_agent import MultiCityComparisonAgent
+from agents.emergency_agent import EmergencyDetectionAgent
+from data.mock_data import (
+    generate_hotspot_features, generate_historical_aqi, FESTIVALS_2025_26,
+    generate_station_snapshot, generate_multi_city_history,
+    generate_source_breakdown_by_city, generate_station_reading_series,
+    CITIES,
+)
+from db.database import is_db_configured
+
+app = FastAPI(title="AirPulse — Features 2, 5, 6, 10, 11")
+>>>>>>> c72ba7a (Implemented the rest of the features)
 
 USING_REAL_DB = is_db_configured()
 
@@ -66,11 +81,17 @@ _prediction_metrics = prediction_agent.train(_prediction_training_df)
 
 advisory_agent = CitizenAdvisoryAgent()
 trend_agent = TrendAnalysisAgent()
+<<<<<<< HEAD
 recommendation_agent = RecommendationAgent()
 enforcement_agent = EnforcementPrioritizationAgent()
 emergency_agent = EmergencyDetectionAgent()
 
 _emission_sources_df = generate_emission_sources()  # swap to a real `emission_sources` table query
+=======
+heatmap_agent = HeatmapAgent()
+comparison_agent = MultiCityComparisonAgent()
+emergency_agent = EmergencyDetectionAgent()
+>>>>>>> c72ba7a (Implemented the rest of the features)
 
 
 # ---------- Feature 2: Source Attribution ----------
@@ -185,8 +206,139 @@ def get_all_trends():
     }
 
 
+# ---------- Feature 6: Geospatial Heatmaps ----------
+
+@app.get("/api/heatmap/{city}")
+def get_heatmap(city: str, pollutant: str = "aqi", resolution: int = 40):
+    if USING_REAL_DB:
+        from db.repository import fetch_latest_station_readings
+        station_df = fetch_latest_station_readings(city)
+    else:
+        station_df = generate_station_snapshot()
+
+    if station_df.empty:
+        raise HTTPException(status_code=404, detail=f"No station data found for {city}")
+
+    heatmap_agent.grid_resolution = resolution
+    result = heatmap_agent.interpolate(station_df, city=city, pollutant=pollutant)
+    return {
+        "city": result.city,
+        "pollutant": result.pollutant,
+        "grid": result.grid,
+        "stations": result.stations,
+    }
+
+
+# ---------- Feature 10: Multi-city Comparison ----------
+# (Not to be confused with the "Feature 10" label on TrendAnalysisAgent
+# above -- per the original plan's numbering that one is Feature 7. This
+# is the actual Feature 10: cross-city benchmarking.)
+
+@app.get("/api/compare")
+def compare_cities(cities: Optional[str] = None, days: int = 30):
+    city_list = [c.strip() for c in cities.split(",")] if cities else CITIES
+
+    if USING_REAL_DB:
+        from db.repository import (
+            fetch_multi_city_summary, fetch_intervention_summary, fetch_source_breakdown_by_city,
+        )
+        history_df = fetch_multi_city_summary(city_list, days)
+        intervention_df = fetch_intervention_summary(city_list, days)
+        source_df = fetch_source_breakdown_by_city(city_list, days)
+        # merge intervention counts/drops into the history frame's per-city rows
+        history_df = history_df.merge(
+            intervention_df.rename(columns={"intervention_count": "_ic", "avg_aqi_drop": "_drop"}),
+            on="city", how="left",
+        )
+        history_df["intervention_logged"] = history_df["_ic"].fillna(0) > 0
+        history_df["aqi_drop"] = history_df["_drop"].fillna(0)
+    else:
+        history_df = generate_multi_city_history(days=days)
+        source_df = generate_source_breakdown_by_city()
+
+    entries = comparison_agent.compare(history_df, source_df)
+    return {
+        "period_days": days,
+        "cities": [
+            {
+                "city": e.city,
+                "avg_aqi": e.avg_aqi,
+                "intervention_count": e.intervention_count,
+                "avg_aqi_drop_per_intervention": e.avg_aqi_drop_per_intervention,
+                "source_breakdown": e.source_breakdown,
+            }
+            for e in entries
+        ],
+    }
+
+
+# ---------- Feature 11: Emergency Pollution Detection ----------
+
+class StationCheckRequest(BaseModel):
+    station_id: int
+    hours: int = 48
+
+
+@app.post("/api/emergency/check")
+def check_station_for_spike(req: StationCheckRequest):
+    """
+    Checks a single station's recent readings for a statistically abnormal
+    spike. Intended to be called inline by the ingestion scheduler on every
+    cycle (15-60 min) for every active station -- exposed here as an
+    endpoint too so the frontend/demo can trigger it on demand.
+    """
+    if USING_REAL_DB:
+        from db.repository import fetch_recent_readings
+        series = fetch_recent_readings(req.station_id, hours=req.hours)
+    else:
+        series = generate_station_reading_series(station_id=req.station_id, hours=req.hours)
+
+    alert = emergency_agent.check_station(series)
+    if alert is None:
+        return {"station_id": req.station_id, "spike_detected": False}
+
+    return {
+        "station_id": alert.station_id,
+        "spike_detected": True,
+        "timestamp": alert.timestamp,
+        "pm25": alert.pm25,
+        "zscore": alert.zscore,
+        "priority": alert.priority,
+        "message": alert.message,
+    }
+
+
+@app.get("/api/emergency/scan/{city}")
+def scan_city_for_spikes(city: str):
+    """Checks every active station in a city in one call -- what the
+    Admin Panel's 'run emergency scan' button would hit."""
+    if USING_REAL_DB:
+        from db.repository import fetch_all_active_station_ids, fetch_recent_readings
+        station_ids = fetch_all_active_station_ids(city)
+        readings_by_station = {sid: fetch_recent_readings(sid) for sid in station_ids}
+    else:
+        # mock mode: pretend there are 3 stations, one of which is spiking
+        readings_by_station = {
+            sid: generate_station_reading_series(station_id=sid) for sid in [1, 2, 3]
+        }
+
+    alerts = emergency_agent.check_all_stations(readings_by_station)
+    return {
+        "city": city,
+        "stations_checked": len(readings_by_station),
+        "alerts": [
+            {
+                "station_id": a.station_id, "timestamp": a.timestamp, "pm25": a.pm25,
+                "zscore": a.zscore, "priority": a.priority, "message": a.message,
+            }
+            for a in alerts
+        ],
+    }
+
+
 @app.get("/")
 def root():
+<<<<<<< HEAD
     return {"status": "AirPulse features 1 (prediction), 2 (attribution), 3 (recommendation), 4 (enforcement), 5 (advisory), 7 (trends), 11 (emergency) are live"}
 
 
@@ -343,3 +495,11 @@ def check_all_emergencies():
         }
         for a in alerts
     ]
+=======
+    return {
+        "status": (
+            "AirPulse features 2 (attribution), 5 (advisory), 7/'10' (trends), "
+            "6 (heatmap), 10 (multi-city comparison), 11 (emergency detection) are live"
+        )
+    }
+>>>>>>> c72ba7a (Implemented the rest of the features)

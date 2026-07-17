@@ -26,6 +26,13 @@ def fetch_osm_features(bbox, amenity_type="industrial"):
         );
         out geom;
         """
+    else:
+        raise ValueError(
+            f"Unknown amenity_type '{amenity_type}' -- expected 'industrial', "
+            "'construction', or 'highway'."
+        )
+
+    response = requests.post(url, data={'data': query})
         
     response = requests.post(url, data={'data': query})
     if response.status_code != 200:
