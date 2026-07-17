@@ -13,6 +13,9 @@ import os
 import sys
 
 import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 def main():
     if len(sys.argv) != 2:
@@ -23,8 +26,8 @@ def main():
     database_url = os.environ.get("DATABASE_URL")
 
     if not database_url:
-        print("ERROR: DATABASE_URL is not set. Run `export $(cat .env | xargs)` first "
-              "(or on Windows: set it directly, see note below).")
+        print("ERROR: DATABASE_URL is not set. Add it to backend/.env "
+              "(copy from .env.example) or export it directly.")
         sys.exit(1)
 
     if not os.path.exists(sql_path):

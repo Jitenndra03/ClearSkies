@@ -24,7 +24,6 @@ from typing import Optional, List
 from agents.attribution_agent import PollutionAttributionAgent
 from agents.advisory_agent import CitizenAdvisoryAgent, CitizenProfile
 from agents.trend_agent import TrendAnalysisAgent
-<<<<<<< HEAD
 from agents.prediction_agent import AQIPredictionAgent
 from agents.recommendation_agent import RecommendationAgent
 from agents.enforcement_agent import EnforcementPrioritizationAgent
@@ -36,25 +35,26 @@ from data.mock_data import (
     generate_current_conditions,
     generate_emission_sources,
     generate_realtime_readings,
+    generate_station_snapshot,
+    generate_multi_city_history,
+    generate_source_breakdown_by_city,
+    generate_station_reading_series,
+    generate_alert_feed,
+    generate_enforcement_queue_snapshot,
+    generate_intervention_roi_series,
     FESTIVALS_2025_26,
-)
-from db.database import is_db_configured
-
-app = FastAPI(title="AirPulse ")
-=======
-from agents.heatmap_agent import HeatmapAgent
-from agents.comparison_agent import MultiCityComparisonAgent
-from agents.emergency_agent import EmergencyDetectionAgent
-from data.mock_data import (
-    generate_hotspot_features, generate_historical_aqi, FESTIVALS_2025_26,
-    generate_station_snapshot, generate_multi_city_history,
-    generate_source_breakdown_by_city, generate_station_reading_series,
     CITIES,
 )
 from db.database import is_db_configured
 
-app = FastAPI(title="AirPulse — Features 2, 5, 6, 10, 11")
->>>>>>> c72ba7a (Implemented the rest of the features)
+from agents.heatmap_agent import HeatmapAgent
+from agents.comparison_agent import MultiCityComparisonAgent
+from agents.chat_agent import ChatAssistantAgent
+from agents.analytics_agent import AnalyticsAgent
+from agents.alert_agent import RealTimeAlertAgent
+from data.knowledge_corpus import DOCS
+
+app = FastAPI(title="AirPulse - Features 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")
 
 USING_REAL_DB = is_db_configured()
 
@@ -81,17 +81,17 @@ _prediction_metrics = prediction_agent.train(_prediction_training_df)
 
 advisory_agent = CitizenAdvisoryAgent()
 trend_agent = TrendAnalysisAgent()
-<<<<<<< HEAD
 recommendation_agent = RecommendationAgent()
 enforcement_agent = EnforcementPrioritizationAgent()
 emergency_agent = EmergencyDetectionAgent()
 
 _emission_sources_df = generate_emission_sources()  # swap to a real `emission_sources` table query
-=======
 heatmap_agent = HeatmapAgent()
 comparison_agent = MultiCityComparisonAgent()
-emergency_agent = EmergencyDetectionAgent()
->>>>>>> c72ba7a (Implemented the rest of the features)
+chat_agent = ChatAssistantAgent(DOCS)
+analytics_agent = AnalyticsAgent()
+alert_agent = RealTimeAlertAgent()
+
 
 
 # ---------- Feature 2: Source Attribution ----------
@@ -336,10 +336,134 @@ def scan_city_for_spikes(city: str):
     }
 
 
+# ---------- Feature 8: AI Chat Assistant ----------
+
+class ChatRequest(BaseModel):
+    query: str
+    ward: Optional[str] = None
+    aqi: Optional[float] = None
+    attributed_source: Optional[str] = None
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest):
+    """
+    RAG-lite Q&A over the knowledge corpus (data/knowledge_corpus.py),
+    optionally grounded in live per-ward data. If the caller only passes
+    `ward`, we auto-fill current AQI + attributed source from the same
+    pipeline the map/dashboard already uses, so "why is AQI high near me
+    today?" works with just a ward name.
+    """
+    live_context = None
+    if req.ward:
+        aqi = req.aqi
+        source = req.attributed_source
+        if aqi is None:
+            conditions = generate_current_conditions(req.ward)
+            forecast = prediction_agent.predict(conditions, horizon_hr=24)
+            aqi = forecast.predicted_aqi
+        if source is None:
+            ward_hotspots = _training_df[_training_df["ward"] == req.ward]
+            if not ward_hotspots.empty:
+                source = attribution_agent.attribute(ward_hotspots.iloc[0]).predicted_source
+        live_context = {"ward": req.ward, "aqi": aqi, "attributed_source": source}
+
+    result = chat_agent.answer(req.query, live_context=live_context)
+    return {
+        "query": result.query,
+        "answer": result.answer,
+        "citations": result.citations,
+        "confidence": result.confidence,
+    }
+
+
+# ---------- Feature 9: Real-time Alerts ----------
+
+class AlertDispatchRequest(BaseModel):
+    ward: str
+    risk_level: str  # moderate / poor / very_poor / severe / critical
+    message: str
+    channel: Optional[str] = None  # push / sms / app_feed / ivr -- auto-picked if omitted
+
+
+@app.post("/api/alerts/dispatch")
+def dispatch_alert(req: AlertDispatchRequest):
+    if req.risk_level == "critical":
+        dispatch = alert_agent.dispatch_emergency(req.ward, req.message, preferred_channel=req.channel)
+    else:
+        dispatch = alert_agent.dispatch_advisory(req.ward, req.risk_level, req.message, preferred_channel=req.channel)
+        if dispatch is None:
+            return {"dispatched": False, "reason": f"risk_level '{req.risk_level}' is below the notify threshold"}
+
+    if USING_REAL_DB:
+        from db.repository import insert_alert_log
+        insert_alert_log(dispatch.recipient, dispatch.channel, dispatch.message, dispatch.risk_level, dispatch.status)
+
+    return {
+        "dispatched": True,
+        "recipient": dispatch.recipient,
+        "channel": dispatch.channel,
+        "message": dispatch.message,
+        "risk_level": dispatch.risk_level,
+        "status": dispatch.status,
+        "dispatched_at": dispatch.dispatched_at,
+    }
+
+
+@app.get("/api/alerts/feed")
+def get_alert_feed(limit: int = 20):
+    """Citizen-facing feed of recently dispatched alerts (Section 11's Alerts page)."""
+    if USING_REAL_DB:
+        from db.repository import fetch_recent_alerts
+        feed_df = fetch_recent_alerts(limit=limit)
+    else:
+        feed_df = generate_alert_feed(n=limit)
+
+    return feed_df.to_dict(orient="records")
+
+
+# ---------- Feature 12: Analytics Dashboard ----------
+
+@app.get("/api/analytics/summary")
+def get_analytics_summary(city: Optional[str] = None):
+    """
+    Rolls up enforcement queue status, intervention outcomes (the closed
+    feedback loop from Section 1), and hotspot source trends into one
+    dashboard-ready summary for the Admin Panel's 'wow' screen.
+    """
+    if USING_REAL_DB:
+        from db.repository import (
+            fetch_enforcement_status_counts, fetch_intervention_roi_timeseries, fetch_source_breakdown_by_city,
+        )
+        enforcement_df = fetch_enforcement_status_counts(city)
+        interventions_df = fetch_intervention_roi_timeseries(city)
+        source_df = fetch_source_breakdown_by_city([city] if city else CITIES)
+    else:
+        enforcement_df = generate_enforcement_queue_snapshot()
+        interventions_df = generate_intervention_roi_series()
+        source_df = generate_source_breakdown_by_city()
+
+    summary = analytics_agent.summarize(enforcement_df, interventions_df, source_df)
+    return {
+        "city": city,
+        "enforcement_status_counts": summary.enforcement_status_counts,
+        "total_interventions": summary.total_interventions,
+        "avg_aqi_drop": summary.avg_aqi_drop,
+        "best_action_type": summary.best_action_type,
+        "intervention_roi_by_date": summary.intervention_roi_by_date,
+        "source_trend": summary.source_trend,
+    }
+
+
 @app.get("/")
 def root():
-<<<<<<< HEAD
-    return {"status": "AirPulse features 1 (prediction), 2 (attribution), 3 (recommendation), 4 (enforcement), 5 (advisory), 7 (trends), 11 (emergency) are live"}
+    return {
+        "status": (
+            "AirPulse features 1 (prediction), 2 (attribution), 3 (recommendation), "
+            "4 (enforcement), 5 (advisory), 6 (heatmap), 7 (trends), 8 (chat), "
+            "9 (alerts), 10 (comparison), 11 (emergency), 12 (analytics) are live"
+        )
+    }
 
 
 # ---------- Feature 1: Hyperlocal AQI Prediction ----------
@@ -495,11 +619,3 @@ def check_all_emergencies():
         }
         for a in alerts
     ]
-=======
-    return {
-        "status": (
-            "AirPulse features 2 (attribution), 5 (advisory), 7/'10' (trends), "
-            "6 (heatmap), 10 (multi-city comparison), 11 (emergency detection) are live"
-        )
-    }
->>>>>>> c72ba7a (Implemented the rest of the features)

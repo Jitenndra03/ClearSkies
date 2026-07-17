@@ -318,6 +318,63 @@ def generate_alert_feed(n: int = 15) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("dispatched_at", ascending=False).reset_index(drop=True)
 
 
+def generate_enforcement_queue_snapshot(n: int = 25) -> pd.DataFrame:
+    """
+    Feature 12 (Analytics Dashboard) input: matches
+    `repository.fetch_enforcement_status_counts()`'s output shape
+    (id, ward, status, priority_score) so AnalyticsAgent can roll up
+    queue status without touching the live enforcement_agent ranking.
+    """
+    statuses = ["pending", "assigned", "resolved"]
+    rows = []
+    for i in range(n):
+        rows.append({
+            "id": i + 1,
+            "ward": np.random.choice(WARDS),
+            "status": np.random.choice(statuses, p=[0.45, 0.25, 0.30]),
+            "priority_score": round(float(np.random.uniform(20, 95)), 1),
+        })
+    return pd.DataFrame(rows)
+
+
+def generate_intervention_roi_series(days: int = 30) -> pd.DataFrame:
+    """
+    Feature 12 (Analytics Dashboard) input: matches
+    `repository.fetch_intervention_roi_timeseries()`'s output shape
+    (date, ward, action_taken, aqi_before, aqi_after) -- the data that
+    powers the "did our interventions actually work" ROI chart, which is
+    the closed-feedback-loop story from Section 1 of the plan.
+    """
+    action_types = [
+        "water_sprinkling", "construction_stop_work", "traffic_diversion",
+        "industrial_emission_check", "dust_suppression",
+    ]
+    # Give each action type a distinct, semi-realistic effectiveness so
+    # "best_action_type" in the summary isn't just noise.
+    action_effect = {
+        "water_sprinkling": 35, "construction_stop_work": 55,
+        "traffic_diversion": 25, "industrial_emission_check": 40,
+        "dust_suppression": 30,
+    }
+    rows = []
+    start = datetime.now() - timedelta(days=days)
+    for d in range(days):
+        date = (start + timedelta(days=d)).date()
+        for _ in range(np.random.randint(0, 3)):  # 0-2 interventions logged that day
+            action = np.random.choice(action_types)
+            aqi_before = float(np.random.uniform(180, 420))
+            drop = action_effect[action] + np.random.normal(0, 12)
+            aqi_after = max(20.0, aqi_before - drop)
+            rows.append({
+                "date": date,
+                "ward": np.random.choice(WARDS),
+                "action_taken": action,
+                "aqi_before": round(aqi_before, 1),
+                "aqi_after": round(aqi_after, 1),
+            })
+    return pd.DataFrame(rows)
+
+
 def generate_historical_aqi(days: int = 400) -> pd.DataFrame:
     """
     Generates a daily AQI time series per ward with:

@@ -265,6 +265,44 @@ def fetch_recent_alerts(limit: int = 50) -> pd.DataFrame:
         return pd.read_sql(query, conn, params={"limit": limit})
 
 
+def fetch_enforcement_status_counts(city: str = None) -> pd.DataFrame:
+    """Matches mock_data.generate_enforcement_queue_snapshot() output shape
+    (id, ward, status, priority_score) -- feeds Feature 12's status breakdown."""
+    query = text("""
+        SELECT eq.id, w.name AS ward, eq.status, eq.priority_score
+        FROM enforcement_queue eq
+        JOIN hotspots h ON h.id = eq.hotspot_id
+        JOIN wards w ON w.id = h.ward_id
+        WHERE (:city IS NULL OR w.city = :city)
+    """)
+    with get_engine().connect() as conn:
+        return pd.read_sql(query, conn, params={"city": city})
+
+
+def fetch_intervention_roi_timeseries(city: str = None, days: int = 60) -> pd.DataFrame:
+    """Matches mock_data.generate_intervention_roi_series() output shape
+    (date, ward, action_taken, aqi_before, aqi_after) -- feeds Feature 12's
+    ROI-over-time chart."""
+    query = text("""
+        SELECT
+            i.timestamp::date AS date,
+            w.name AS ward,
+            i.action_taken,
+            i.aqi_before,
+            i.aqi_after
+        FROM interventions i
+        JOIN enforcement_queue eq ON eq.id = i.enforcement_queue_id
+        JOIN hotspots h ON h.id = eq.hotspot_id
+        JOIN wards w ON w.id = h.ward_id
+        WHERE (:city IS NULL OR w.city = :city)
+          AND i.timestamp >= now() - (:days || ' days')::interval
+          AND i.aqi_after IS NOT NULL
+        ORDER BY date
+    """)
+    with get_engine().connect() as conn:
+        return pd.read_sql(query, conn, params={"city": city, "days": days})
+
+
 def insert_advisory(ward_name: str, language: str, message: str, risk_level: str) -> None:
     """Logs a dispatched citizen advisory for the audit trail / Section 9 citizen_advisories table."""
     query = text("""
