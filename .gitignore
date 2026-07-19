@@ -1,0 +1,9 @@
+# Environments
+.env
+.luffy
+luffy/
+__pycache__/
+*.pyc
+
+# Geospatial Cache Files (Optional, so you don't upload massive GeoJSONs)
+*.geojson

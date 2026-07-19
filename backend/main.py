@@ -1,9 +1,12 @@
 """
 main.py
 -------
-FastAPI wiring for System Features 2, 5, and 10 so the frontend team can
-hit real endpoints immediately, using mock data until the ingestion
-pipeline is connected.
+FastAPI wiring for System Features 1, 2, 3, 4, 5, 7, and 11 so the frontend
+team can hit real endpoints immediately, using mock data until the
+ingestion pipeline is connected.
+
+(Note: Trend Analysis is Feature 7 in the plan's Section 2 list, not
+Feature 10 as an earlier version of this file said -- fixed here.)
 
 Run: uvicorn api.main:app --reload --port 8000
 Docs: http://localhost:8000/docs
@@ -27,8 +30,35 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from pipeline.ingestion import run_ingestion
 from agents.recommendation_agent import RecommendationAgent
 from agents.explanation_agent import ExplanationAgent
-from data.mock_data import generate_hotspot_features, generate_historical_aqi, FESTIVALS_2025_26
 from db.database import is_db_configured
+from agents.prediction_agent import AQIPredictionAgent
+from agents.enforcement_agent import EnforcementPrioritizationAgent
+from agents.emergency_agent import EmergencyDetectionAgent
+from db.repository import fetch_active_hotspots
+from data.mock_data import (
+    generate_hotspot_features,
+    generate_historical_aqi,
+    generate_prediction_training_data,
+    generate_current_conditions,
+    generate_emission_sources,
+    generate_realtime_readings,
+    generate_station_snapshot,
+    generate_multi_city_history,
+    generate_source_breakdown_by_city,
+    generate_station_reading_series,
+    generate_alert_feed,
+    generate_enforcement_queue_snapshot,
+    generate_intervention_roi_series,
+    FESTIVALS_2025_26,
+    CITIES,
+)
+
+from agents.heatmap_agent import HeatmapAgent
+from agents.comparison_agent import MultiCityComparisonAgent
+from agents.chat_agent import ChatAssistantAgent
+from agents.analytics_agent import AnalyticsAgent
+from agents.alert_agent import RealTimeAlertAgent
+from data.knowledge_corpus import DOCS
 
 app = FastAPI(title="AirPulse — Features 2, 5, 10")
 
@@ -55,12 +85,26 @@ else:
     _training_df = generate_hotspot_features()
     _historical_df = generate_historical_aqi()
 
-# --- Startup: train the attribution model once ---
+# --- Startup: train models once ---
 attribution_agent = PollutionAttributionAgent()
 _training_report = attribution_agent.train(_training_df)
 
+prediction_agent = AQIPredictionAgent()
+_prediction_training_df = generate_prediction_training_data()  # swap to real historical query once you have enough real days
+_prediction_metrics = prediction_agent.train(_prediction_training_df)
+
 advisory_agent = CitizenAdvisoryAgent()
 trend_agent = TrendAnalysisAgent()
+recommendation_agent = RecommendationAgent()
+enforcement_agent = EnforcementPrioritizationAgent()
+emergency_agent = EmergencyDetectionAgent()
+
+_emission_sources_df = generate_emission_sources()  # swap to a real `emission_sources` table query
+heatmap_agent = HeatmapAgent()
+comparison_agent = MultiCityComparisonAgent()
+chat_agent = ChatAssistantAgent(DOCS)
+analytics_agent = AnalyticsAgent()
+alert_agent = RealTimeAlertAgent()
 
 
 # ---------- Feature 2: Source Attribution ----------
@@ -142,7 +186,7 @@ def get_advisory(req: AdvisoryRequest):
     }
 
 
-# ---------- Feature 10: Trend Analysis ----------
+# ---------- Feature 7: Trend Analysis ----------
 
 @app.get("/api/trends/{ward}")
 def get_ward_trends(ward: str):
@@ -178,26 +222,58 @@ def get_all_trends():
 
 # ---------- Feature: Admin Enforcement Queue ----------
 
-from db.repository import fetch_active_hotspots
+# Maps hotspot "source" labels (used elsewhere in the app / mock data) to the
+# keys RecommendationAgent's ACTION_MATRIX actually understands.
+_SOURCE_ALIAS = {
+    "vehicular": "traffic",
+}
 
 @app.get("/api/enforcement-queue")
 def get_enforcement_queue():
     agent = RecommendationAgent()
-    
+
     if USING_REAL_DB:
         hotspots = fetch_active_hotspots(limit=10)
     else:
         hotspots = []
-        
+
     if not hotspots:
         hotspots = [
             {"id": "enf-001", "ward": "Shahdara", "source": "industrial", "confidence": 0.88, "aqi": 420},
             {"id": "enf-002", "ward": "Anand Vihar", "source": "vehicular", "confidence": 0.92, "aqi": 390},
             {"id": "enf-003", "ward": "Nehru Nagar", "source": "construction", "confidence": 0.85, "aqi": 350},
         ]
-        
-    queue = agent.generate(hotspots)
+
+    queue = []
+    for h in hotspots:
+        raw_source = h.get("source", "dust")
+        source = _SOURCE_ALIAS.get(raw_source, raw_source)
+
+        bundle = agent.recommend(
+            ward=h["ward"],
+            source=source,
+            forecast_aqi=h["aqi"],
+        )
+        priority_score = round((h["aqi"] / 500) * h.get("confidence", 0.0), 2)
+
+        queue.append({
+            "id": h.get("id"),
+            "ward": bundle.ward,
+            "source": raw_source,
+            "severity": bundle.severity,
+            "actions": [
+                {"action": a.action, "role": a.responsible_role, "urgency_hours": a.urgency_hours}
+                for a in bundle.actions
+            ],
+            "priority_score": priority_score,
+            "status": "Pending",
+            "before_aqi": h["aqi"],
+            "after_aqi": None,
+        })
+
+    queue.sort(key=lambda x: x["priority_score"], reverse=True)
     return {"queue": queue, "generated_at": datetime.utcnow().isoformat()}
+
 
 # ---------- Feature: Outcome Tracking ----------
 

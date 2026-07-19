@@ -18,8 +18,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+# Loads backend/.env automatically (no-op if the file doesn't exist, e.g.
+# in production where env vars are set by the platform instead). Path is
+# resolved relative to this file, not the process's cwd, so `uvicorn
+# main:app` from backend/ and `python db/run_migration.py ...` both find
+# it regardless of where they're invoked from. This means DATABASE_URL
+# and friends work as soon as .env exists -- no more manual
+# `export $(cat .env | xargs)` step required for local dev.
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 

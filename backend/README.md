@@ -1,12 +1,16 @@
-# AirPulse — Features 2, 5, 10
+# AirPulse — Features 1, 2, 3, 4, 5, 7, 11
 
-Working implementations of three system features from the AirPulse plan:
+Working implementations of seven system features from the AirPulse plan. (Note: an earlier version of this README called the trend agent "Feature 10" — it's actually **Feature 7** per Section 2 of the plan; #10 is Multi-city Comparison, not yet built.)
 
-- **Feature 2 — Pollution Source Attribution** (`agents/attribution_agent.py`): RandomForest classifier that attributes a hotspot to traffic/construction/industrial/dust/stubble-burning with a confidence score and human-readable evidence.
-- **Feature 5 — Citizen Health Advisory** (`agents/advisory_agent.py`): Personalized, multilingual (English + Hindi, easily extendable) health advisories based on forecast AQI + vulnerability profile (asthma, elderly, outdoor worker).
-- **Feature 10 — Trend Analysis** (`agents/trend_agent.py`): Mines historical AQI for weekday/weekend deltas, monthly seasonality, festival-linked spikes (Diwali, Holi, stubble season), and statistical anomaly days.
+- **Feature 1 — Hyperlocal AQI Prediction** (`agents/prediction_agent.py`): LightGBM regressor forecasting AQI 24/48/72 hours ahead per ward, with widening confidence intervals for longer horizons.
+- **Feature 2 — Pollution Source Attribution** (`agents/attribution_agent.py`): RandomForest classifier attributing hotspots to traffic/construction/industrial/dust/stubble-burning with confidence + evidence.
+- **Feature 3 — AI Intervention Recommendation Engine** (`agents/recommendation_agent.py`): Deterministic source × severity decision matrix producing role-specific, time-bound actions (deliberately rule-based, not LLM-driven, for auditability).
+- **Feature 4 — Smart Enforcement Prioritization** (`agents/enforcement_agent.py`): Ranks registered emission sources by a composite risk score (proximity to hotspot, permit status, inspection recency, forecast severity).
+- **Feature 5 — Citizen Health Advisory** (`agents/advisory_agent.py`): Personalized, multilingual (English + Hindi, easily extendable) health advisories based on forecast AQI + vulnerability profile.
+- **Feature 7 — Trend Analysis** (`agents/trend_agent.py`): Weekday/weekend deltas, monthly seasonality, festival-linked spikes, and statistical anomaly days.
+- **Feature 11 — Emergency Pollution Detection** (`agents/emergency_agent.py`): Real-time rate-of-change + absolute-threshold detection on sub-hourly readings, independent of the daily Trend Analysis anomaly check.
 
-All three are wired into a FastAPI app (`api/main.py`) so the frontend team can integrate immediately.
+All seven are wired into a FastAPI app (`api/main.py`) so the frontend team can integrate immediately.
 
 ## Setup
 
@@ -20,30 +24,53 @@ pip install -r requirements.txt
 python3 agents/attribution_agent.py
 python3 agents/advisory_agent.py
 python3 agents/trend_agent.py
+python3 agents/prediction_agent.py
+python3 agents/recommendation_agent.py
+python3 agents/enforcement_agent.py
+python3 agents/emergency_agent.py
 ```
 
 ## Run the API
 
 ```bash
-uvicorn api.main:app --reload --port 8000
+uvicorn main:app --reload --port 8000        # if you flattened main.py into backend/
+# or
+uvicorn api.main:app --reload --port 8000    # if api/main.py stayed nested
 ```
 
 Then open `http://localhost:8000/docs` for interactive Swagger docs, or:
 
 ```bash
-# Attribution
+# Feature 1 — forecast
+curl "http://localhost:8000/api/forecast/Ward-1?horizon_hr=48"
+curl "http://localhost:8000/api/forecast/Ward-2/multi-horizon"
+
+# Feature 2 — attribution
 curl -X POST http://localhost:8000/api/attribution \
   -H "Content-Type: application/json" \
   -d '{"ward":"Ward-3","traffic_density_idx":0.2,"construction_permit_density":0.05,"industrial_stack_count":5,"thermal_anomaly_count":0,"dust_landuse_pct":0.05,"pm25":95}'
 
-# Advisory
+# Feature 3 — recommendations (manual or auto-piped from attribution+forecast)
+curl -X POST http://localhost:8000/api/recommendations \
+  -H "Content-Type: application/json" \
+  -d '{"ward":"Ward-3","source":"industrial","forecast_aqi":420}'
+curl "http://localhost:8000/api/recommendations/Ward-1"
+
+# Feature 4 — enforcement queue
+curl "http://localhost:8000/api/enforcement/queue?top_n=5"
+
+# Feature 5 — advisory
 curl -X POST http://localhost:8000/api/advisory \
   -H "Content-Type: application/json" \
   -d '{"user_id":"u9","ward":"Ward-2","language":"hi","conditions":["asthma"],"forecast_aqi":320}'
 
-# Trends
+# Feature 7 — trends
 curl http://localhost:8000/api/trends/Ward-4
 curl http://localhost:8000/api/trends
+
+# Feature 11 — emergency detection
+curl "http://localhost:8000/api/emergency/check/Ward-5?simulate_spike=true"
+curl "http://localhost:8000/api/emergency/check-all"
 ```
 
 ## Connecting to Neon (real database)
@@ -55,24 +82,28 @@ Your live Neon schema already exists (`db/migrations/001_init_schema.sql` mirror
    ```bash
    export $(cat .env | xargs)
    ```
-3. Run the additive migration:
+3. Run the additive migration (psql, or the Python fallback if psql isn't installed):
    ```bash
    psql "$DATABASE_URL" -f db/migrations/002_add_attribution_and_citizens.sql
+   # or, if psql isn't available (e.g. plain Git Bash on Windows):
+   python db/run_migration.py db/migrations/002_add_attribution_and_citizens.sql
    ```
 4. Seed at least one row in `citizens` so `/api/advisory` has someone real to look up (or keep passing profile fields directly in the request, which works without the table too).
-5. Start the API — it auto-detects `DATABASE_URL` and switches from mock to real data for trends/advisories, and writes attribution + advisory results back to Neon:
-   ```bash
-   uvicorn api.main:app --reload --port 8000
-   ```
+5. Start the API — it auto-detects `DATABASE_URL` and switches from mock to real data for trends/advisories, and writes attribution + advisory results back to Neon.
 
 **Important caveat on Feature 2 (attribution):** the RandomForest classifier needs *labeled* training data (a `source_label` per hotspot) to learn from. Your `hotspots` table doesn't have that until your team manually labels some historical hotspots or an inspector confirms a few. Until then, `api/main.py` keeps training on mock labeled data even in real-DB mode — inference still happens on your real hotspot features, only the training set is synthetic. Swap `_training_df` in `api/main.py` to a real labeled query once you have ~50+ labeled examples.
 
+**Same caveat applies to Feature 1 (prediction):** it needs enough real historical days (ideally 60+) with weather/traffic features attached before switching `_prediction_training_df` from `generate_prediction_training_data()` to a real query — a LightGBM model trained on a handful of real days will overfit badly.
+
 ## Swapping mock data for real feeds
 
-`data/mock_data.py` generates synthetic hotspot features, citizen profiles, and 400 days of historical AQI so all three agents can be built/demoed before the ingestion pipeline (CAAQMS, Overpass land-use, NASA FIRMS) is live. Each generator's output schema matches what the real PostGIS tables will produce — swap the call sites in `api/main.py` for real DB queries without touching agent logic.
+`data/mock_data.py` generates synthetic hotspot features, citizen profiles, weather/traffic conditions, emission sources, sub-hourly readings, and 400 days of historical AQI so all seven agents can be built/demoed before the ingestion pipeline (CAAQMS, Overpass land-use, NASA FIRMS, weather APIs) is live. Each generator's output schema matches what the real PostGIS tables will produce — swap the call sites in `api/main.py` for real DB queries without touching agent logic.
 
 ## What to plug in next
 - Replace `generate_hotspot_features()` with a real query joining `readings` + `emission_sources` + Overpass land-use.
-- Replace `generate_citizen_profile()` / hardcoded profiles with the `citizen_advisories` subscriber table.
+- Replace `generate_citizen_profile()` / hardcoded profiles with the `citizens` table (added by migration 002).
 - Replace `generate_historical_aqi()` with a `SELECT ward, date, avg(aqi) FROM readings GROUP BY ...` query against PostGIS.
+- Replace `generate_current_conditions()` and `generate_prediction_training_data()` with real weather (Open-Meteo) + traffic feeds once ingestion is live.
+- Replace `generate_emission_sources()` with a real query against the `emission_sources` table.
+- Replace `generate_realtime_readings()` with a live sub-hourly `readings` query (last N minutes) for the Emergency Detection Agent.
 - Add more languages to `TEMPLATES` / `VULNERABILITY_ADDENDA` in `advisory_agent.py` (Kannada, Tamil) — it's a pure data addition, no code change needed.
