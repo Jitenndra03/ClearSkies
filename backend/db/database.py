@@ -14,6 +14,9 @@ it with python-dotenv, or set it in your deployment platform's env vars.
 
 import os
 from contextlib import contextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

@@ -93,6 +93,34 @@ def fetch_latest_forecast(ward_name: str) -> float | None:
         return float(row[0]) if row else None
 
 
+def fetch_active_hotspots(limit: int = 10) -> list[dict]:
+    """
+    Fetches the latest unresolved hotspots from the database, mimicking the shape of MOCK_HOTSPOTS:
+    [{"id": str, "ward": str, "source": str, "confidence": float, "aqi": int}]
+    """
+    query = text("""
+        SELECT
+            h.id::text,
+            w.name AS ward,
+            h.attributed_source AS source,
+            h.confidence_score AS confidence,
+            COALESCE((
+                SELECT r.aqi 
+                FROM readings r 
+                JOIN stations s ON s.id = r.station_id 
+                WHERE s.ward_id = w.id 
+                ORDER BY r.timestamp DESC LIMIT 1
+            ), 0) AS aqi
+        FROM hotspots h
+        JOIN wards w ON w.id = h.ward_id
+        ORDER BY h.detected_at DESC
+        LIMIT :limit
+    """)
+    with get_engine().connect() as conn:
+        rows = conn.execute(query, {"limit": limit}).mappings().all()
+        return [dict(r) for r in rows]
+
+
 def fetch_active_hotspots_for_map(ward_name: str = None, limit: int = 200) -> pd.DataFrame:
     """
     Hotspots with lat/lon extracted from the PostGIS `geometry` column
