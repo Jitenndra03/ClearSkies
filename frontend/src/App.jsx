@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ThemeProvider } from './hooks/useTheme';  // ← add
+import { ThemeProvider } from './hooks/useTheme';
+import './premium-additions.css';
 import Layout from './components/layout/Layout';
 import DashboardPage from './pages/DashboardPage';
 import ForecastPage from './pages/ForecastPage';
