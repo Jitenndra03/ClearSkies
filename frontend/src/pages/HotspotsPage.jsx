@@ -1,8 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
-import { HOTSPOTS } from '../data/mockData';
 import { getAqiColor, getAqiBadgeClass, getAqiLabel, SOURCE_TYPES } from '../utils/aqi';
-import { postAttribution, getModelReport } from '../api/client';
+import { postAttribution, getModelReport, getHotspots } from '../api/client';
 import 'leaflet/dist/leaflet.css';
 
 const FILTER_OPTIONS = [
@@ -16,13 +15,34 @@ const FILTER_OPTIONS = [
 export default function HotspotsPage() {
   const [filter, setFilter] = useState('all');
   const [selectedId, setSelectedId] = useState(null);
+  const [hotspots, setHotspots] = useState([]);
+  const [isLoadingHotspots, setIsLoadingHotspots] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    getHotspots()
+      .then((data) => {
+        if (mounted) {
+          setHotspots(data || []);
+          setIsLoadingHotspots(false);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch hotspots", err);
+        if (mounted) {
+          setHotspots([]);
+          setIsLoadingHotspots(false);
+        }
+      });
+    return () => { mounted = false; };
+  }, []);
 
   const filtered = useMemo(
-    () => filter === 'all' ? HOTSPOTS : HOTSPOTS.filter((h) => h.source === filter),
-    [filter]
+    () => filter === 'all' ? hotspots : hotspots.filter((h) => h.source === filter),
+    [filter, hotspots]
   );
 
-  const selectedHotspot = HOTSPOTS.find((h) => h.id === selectedId);
+  const selectedHotspot = hotspots.find((h) => h.id === selectedId);
 
   const [attribution, setAttribution] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -109,7 +129,12 @@ export default function HotspotsPage() {
       </div>
 
       {/* Map */}
-      <div className="map-container" style={{ marginBottom: '24px' }}>
+      <div className="map-container" style={{ marginBottom: '24px', position: 'relative' }}>
+        {isLoadingHotspots && (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+            Loading live hotspots...
+          </div>
+        )}
         <MapContainer
           center={[28.6139, 77.2090]}
           zoom={11}
@@ -156,7 +181,9 @@ export default function HotspotsPage() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {filtered.length === 0 ? (
+        {isLoadingHotspots ? (
+          <div className="empty-state">Loading live hotspots...</div>
+        ) : filtered.length === 0 ? (
           <div className="empty-state">
             No hotspots detected for this source type in the last hour. Data refreshes every 15 minutes.
           </div>

@@ -135,7 +135,14 @@ def fetch_active_hotspots_for_map(ward_name: str = None, limit: int = 200) -> pd
             ST_X(h.geometry) AS lon,
             h.attributed_source,
             h.confidence_score,
-            h.detected_at
+            h.detected_at,
+            COALESCE((
+                SELECT r.aqi 
+                FROM readings r 
+                JOIN stations s ON s.id = r.station_id 
+                WHERE s.ward_id = w.id 
+                ORDER BY r.timestamp DESC LIMIT 1
+            ), 0) AS aqi
         FROM hotspots h
         JOIN wards w ON w.id = h.ward_id
         WHERE (:ward_name IS NULL OR w.name = :ward_name)

@@ -107,6 +107,31 @@ analytics_agent = AnalyticsAgent()
 alert_agent = RealTimeAlertAgent()
 
 
+# ---------- Hotspots API (Live) ----------
+
+@app.get("/api/hotspots")
+def get_hotspots():
+    if USING_REAL_DB:
+        from db.repository import fetch_active_hotspots_for_map
+        import pandas as pd
+        df = fetch_active_hotspots_for_map()
+        hotspots_list = []
+        for _, row in df.iterrows():
+            hotspots_list.append({
+                "id": str(row["hotspot_id"]),
+                "zone": row["ward"],
+                "lat": row["lat"],
+                "lng": row["lon"],
+                "source": row["attributed_source"] if pd.notnull(row["attributed_source"]) else "unknown",
+                "confidence": round(row["confidence_score"] * 100) if pd.notnull(row["confidence_score"]) else 0,
+                "aqi": int(row["aqi"]) if pd.notnull(row["aqi"]) else 0,
+            })
+        return hotspots_list
+    else:
+        # User explicitly requested real-time data, so if the DB is down, return empty
+        return []
+
+
 # ---------- Feature 2: Source Attribution ----------
 
 class HotspotInput(BaseModel):

@@ -59,6 +59,11 @@ export async function getHealth() {
   return request('/');
 }
 
+// ---- Feature: Live Hotspots ----
+export async function getHotspots() {
+  return request('/api/hotspots');
+}
+
 // ---- Feature: Admin Enforcement Queue ----
 export async function getEnforcementQueue() {
   return request('/api/enforcement-queue');

@@ -115,8 +115,14 @@ export default function AdminPage() {
           <div style={{ animation: 'pulse 1.5s infinite', background: 'var(--color-bg-tertiary, rgba(128,128,128,0.2))', height: '120px', borderRadius: '8px', opacity: 0.5 }} />
         ) : error && queue.length === 0 ? (
           <div className="empty-state">Unable to load enforcement queue. {error}</div>
-        ) : queue.map((item) => (
-          <div key={item.id} className="enforcement-item">
+        ) : queue.map((item) => {
+          const priorityScore = item.priority_score || item.priority || 0;
+          let priorityLevel = 'low';
+          if (priorityScore > 8) priorityLevel = 'high';
+          else if (priorityScore >= 6) priorityLevel = 'medium';
+          
+          return (
+          <div key={item.id} className="enforcement-item" data-priority={priorityLevel}>
             <div className="enforcement-header">
               <div>
                 <div className="enforcement-priority">
@@ -171,23 +177,14 @@ export default function AdminPage() {
                   <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
                     After: <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>{item.after_aqi || item.afterAqi}</span>
                   </div>
-                  <span className="aqi-delta" style={{ fontFamily: 'JetBrains Mono, monospace', background: 'var(--color-aqi-good)', color: '#000', padding: '2px 6px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                  <span className="aqi-delta-badge">
                     ▼ {(item.before_aqi || item.beforeAqi) - (item.after_aqi || item.afterAqi)} AQI
                   </span>
                 </div>
               )}
 
-              {/* Inline log outcome form */}
               {logModalId === item.id && (
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '8px 12px',
-                  background: 'var(--color-bg-tertiary)',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--color-border)',
-                }}>
+                <div className="inline-form">
                   <label style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
                     Post-action AQI:
                   </label>
@@ -196,17 +193,7 @@ export default function AdminPage() {
                     value={logAqi}
                     onChange={(e) => setLogAqi(e.target.value)}
                     placeholder="e.g. 162"
-                    style={{
-                      width: '80px',
-                      padding: '4px 8px',
-                      background: 'var(--color-bg-primary)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 'var(--radius-sm)',
-                      color: 'var(--color-text-primary)',
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.8125rem',
-                      outline: 'none',
-                    }}
+                    className="inline-form-input"
                   />
                   <button
                     className="btn btn-primary btn-small"
@@ -224,7 +211,8 @@ export default function AdminPage() {
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

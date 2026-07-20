@@ -256,7 +256,7 @@ export default function CitizenPage() {
         <div className="chat-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', padding: '16px', maxHeight: '400px' }}>
           {messages.map((msg, idx) => (
             <div key={idx} style={{ alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
-              <div className="chat-message" style={{ background: msg.role === 'user' ? 'var(--color-primary)' : 'var(--color-bg-secondary)', color: msg.role === 'user' ? '#fff' : 'var(--color-text-primary)', padding: '8px 12px', borderRadius: '8px' }}>
+              <div className={`chat-message ${msg.role === 'user' ? 'user' : 'assistant'}`}>
                 {msg.content}
               </div>
               {msg.role === 'assistant' && msg.citation && (
@@ -267,10 +267,10 @@ export default function CitizenPage() {
             </div>
           ))}
           {isTyping && (
-            <div style={{ alignSelf: 'flex-start', background: 'var(--color-bg-secondary)', padding: '8px 12px', borderRadius: '8px' }}>
-              <span style={{ display: 'inline-block', animation: 'pulse 1s infinite' }}>.</span>
-              <span style={{ display: 'inline-block', animation: 'pulse 1s infinite', animationDelay: '0.2s' }}>.</span>
-              <span style={{ display: 'inline-block', animation: 'pulse 1s infinite', animationDelay: '0.4s' }}>.</span>
+            <div className="typing-indicator">
+              <div className="typing-dot"></div>
+              <div className="typing-dot"></div>
+              <div className="typing-dot"></div>
             </div>
           )}
         </div>
@@ -282,7 +282,7 @@ export default function CitizenPage() {
             onChange={(e) => setChatInput(e.target.value)}
             placeholder={lang === 'en' ? 'Ask a follow-up question...' : 'अनुवर्ती प्रश्न पूछें...'}
           />
-          <button type="submit" className="btn btn-primary btn-small">
+          <button type="submit" className="btn-chat-submit">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="22" y1="2" x2="11" y2="13" />
               <polygon points="22 2 15 22 11 13 2 9 22 2" />
