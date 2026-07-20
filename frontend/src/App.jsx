@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { ThemeProvider } from './hooks/useTheme';  // ← add
 import Layout from './components/layout/Layout';
 import DashboardPage from './pages/DashboardPage';
 import ForecastPage from './pages/ForecastPage';
@@ -8,16 +9,18 @@ import CitizenPage from './pages/CitizenPage';
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/forecast" element={<ForecastPage />} />
-          <Route path="/hotspots" element={<HotspotsPage />} />
-          <Route path="/admin" element={<AdminPage />} />
-          <Route path="/citizen" element={<CitizenPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <ThemeProvider>          {/* ← add */}
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/forecast" element={<ForecastPage />} />
+            <Route path="/hotspots" element={<HotspotsPage />} />
+            <Route path="/admin" element={<AdminPage />} />
+            <Route path="/citizen" element={<CitizenPage />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }

@@ -5,16 +5,16 @@
 
 // --- Ward definitions with coordinates for Leaflet ---
 export const WARDS = [
-  { id: 'anand-vihar',       name: 'Anand Vihar',        lat: 28.6469, lng: 77.3164, aqi: 287 },
-  { id: 'ito',               name: 'ITO',                lat: 28.6289, lng: 77.2414, aqi: 198 },
-  { id: 'dwarka',            name: 'Dwarka Sec-8',       lat: 28.5733, lng: 77.0651, aqi: 142 },
-  { id: 'rohini',            name: 'Rohini',             lat: 28.7324, lng: 77.1108, aqi: 231 },
-  { id: 'connaught-place',   name: 'Connaught Place',    lat: 28.6315, lng: 77.2167, aqi: 165 },
-  { id: 'nehru-nagar',       name: 'Nehru Nagar',        lat: 28.6507, lng: 77.2723, aqi: 312 },
-  { id: 'okhla',             name: 'Okhla Phase-II',     lat: 28.5308, lng: 77.2713, aqi: 254 },
-  { id: 'patel-nagar',       name: 'Patel Nagar',        lat: 28.6512, lng: 77.1639, aqi: 178 },
-  { id: 'shahdara',          name: 'Shahdara',           lat: 28.6736, lng: 77.2905, aqi: 341 },
-  { id: 'kidwai-nagar',      name: 'Kidwai Nagar',       lat: 28.5795, lng: 77.2090, aqi: 189 },
+  { id: 'anand-vihar', name: 'Anand Vihar', lat: 28.6469, lng: 77.3164, aqi: 287 },
+  { id: 'ito', name: 'ITO', lat: 28.6289, lng: 77.2414, aqi: 198 },
+  { id: 'dwarka', name: 'Dwarka Sec-8', lat: 28.5733, lng: 77.0651, aqi: 142 },
+  { id: 'rohini', name: 'Rohini', lat: 28.7324, lng: 77.1108, aqi: 231 },
+  { id: 'connaught-place', name: 'Connaught Place', lat: 28.6315, lng: 77.2167, aqi: 165 },
+  { id: 'nehru-nagar', name: 'Nehru Nagar', lat: 28.6507, lng: 77.2723, aqi: 312 },
+  { id: 'okhla', name: 'Okhla Phase-II', lat: 28.5308, lng: 77.2713, aqi: 254 },
+  { id: 'patel-nagar', name: 'Patel Nagar', lat: 28.6512, lng: 77.1639, aqi: 178 },
+  { id: 'shahdara', name: 'Shahdara', lat: 28.6736, lng: 77.2905, aqi: 341 },
+  { id: 'kidwai-nagar', name: 'Kidwai Nagar', lat: 28.5795, lng: 77.2090, aqi: 189 },
 ];
 
 export const CITY_AQI = 224;
@@ -85,14 +85,14 @@ export const HEALTH_IMPLICATIONS = {
 
 // --- Hotspot data ---
 export const HOTSPOTS = [
-  { id: 1, zone: 'Shahdara Industrial Belt',    source: 'industrial',   confidence: 91, aqi: 341, lat: 28.6736, lng: 77.2905 },
-  { id: 2, zone: 'Nehru Nagar Construction',    source: 'construction', confidence: 87, aqi: 312, lat: 28.6507, lng: 77.2723 },
-  { id: 3, zone: 'Anand Vihar Bus Terminal',    source: 'vehicular',    confidence: 82, aqi: 287, lat: 28.6469, lng: 77.3164 },
-  { id: 4, zone: 'Okhla Industrial Area',       source: 'industrial',   confidence: 79, aqi: 254, lat: 28.5308, lng: 77.2713 },
-  { id: 5, zone: 'Rohini Sec-22 Construction',  source: 'construction', confidence: 74, aqi: 231, lat: 28.7324, lng: 77.1108 },
-  { id: 6, zone: 'ITO Traffic Corridor',        source: 'vehicular',    confidence: 71, aqi: 198, lat: 28.6289, lng: 77.2414 },
-  { id: 7, zone: 'Kidwai Nagar Metro Site',     source: 'construction', confidence: 65, aqi: 189, lat: 28.5795, lng: 77.2090 },
-  { id: 8, zone: 'Mundka Agricultural Burn',    source: 'agricultural', confidence: 58, aqi: 176, lat: 28.6831, lng: 77.0311 },
+  { id: 1, zone: 'Shahdara Industrial Belt', source: 'industrial', confidence: 91, aqi: 341, lat: 28.6736, lng: 77.2905 },
+  { id: 2, zone: 'Nehru Nagar Construction', source: 'construction', confidence: 87, aqi: 312, lat: 28.6507, lng: 77.2723 },
+  { id: 3, zone: 'Anand Vihar Bus Terminal', source: 'vehicular', confidence: 82, aqi: 287, lat: 28.6469, lng: 77.3164 },
+  { id: 4, zone: 'Okhla Industrial Area', source: 'industrial', confidence: 79, aqi: 254, lat: 28.5308, lng: 77.2713 },
+  { id: 5, zone: 'Rohini Sec-22 Construction', source: 'construction', confidence: 74, aqi: 231, lat: 28.7324, lng: 77.1108 },
+  { id: 6, zone: 'ITO Traffic Corridor', source: 'vehicular', confidence: 71, aqi: 198, lat: 28.6289, lng: 77.2414 },
+  { id: 7, zone: 'Kidwai Nagar Metro Site', source: 'construction', confidence: 65, aqi: 189, lat: 28.5795, lng: 77.2090 },
+  { id: 8, zone: 'Mundka Agricultural Burn', source: 'agricultural', confidence: 58, aqi: 176, lat: 28.6831, lng: 77.0311 },
 ];
 
 // --- Enforcement queue ---
