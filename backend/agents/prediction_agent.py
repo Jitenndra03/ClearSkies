@@ -17,7 +17,13 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor
+try:
+    from lightgbm import LGBMRegressor
+    _HAS_LIGHTGBM = True
+except ImportError:
+    _HAS_LIGHTGBM = False
+    from sklearn.ensemble import GradientBoostingRegressor
+
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
@@ -55,13 +61,24 @@ class AQIPredictionAgent:
     """
 
     def __init__(self, random_state: int = 42):
-        self.model = LGBMRegressor(
-            n_estimators=300,
-            max_depth=6,
-            learning_rate=0.05,
-            random_state=random_state,
-            verbosity=-1,
-        )
+        if _HAS_LIGHTGBM:
+            self.model = LGBMRegressor(
+                n_estimators=300,
+                max_depth=6,
+                learning_rate=0.05,
+                random_state=random_state,
+                verbosity=-1,
+            )
+        else:
+            # Fallback: sklearn's GradientBoostingRegressor provides a
+            # comparable gradient-boosted-tree model when lightgbm isn't
+            # installed (e.g. missing C++ build deps on some systems).
+            self.model = GradientBoostingRegressor(
+                n_estimators=300,
+                max_depth=6,
+                learning_rate=0.05,
+                random_state=random_state,
+            )
         self._is_trained = False
         self._residual_std = None
 

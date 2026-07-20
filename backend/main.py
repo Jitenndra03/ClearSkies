@@ -41,7 +41,6 @@ from data.mock_data import (
     generate_prediction_training_data,
     generate_current_conditions,
     generate_emission_sources,
-    generate_realtime_readings,
     generate_station_snapshot,
     generate_multi_city_history,
     generate_source_breakdown_by_city,
@@ -151,7 +150,7 @@ class HotspotInputWithId(HotspotInput):
 @app.post("/api/attribution")
 def attribute_hotspot(hotspot: HotspotInputWithId):
     import pandas as pd
-    row = pd.Series(hotspot.dict(exclude={"hotspot_id"}))
+    row = pd.Series(hotspot.model_dump(exclude={"hotspot_id"}))
     result = attribution_agent.attribute(row)
 
     if USING_REAL_DB and hotspot.hotspot_id is not None:
@@ -370,6 +369,7 @@ async def shutdown_event():
     import logging
     logging.info("Ingestion scheduler stopped")
 
+<<<<<<< HEAD
 @app.post("/api/ingest/trigger")
 def trigger_ingestion_manual():
     try:
@@ -377,3 +377,153 @@ def trigger_ingestion_manual():
         return {"success": True, "message": "Ingestion completed successfully"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+=======
+
+@app.get("/api/forecast/{ward}/multi-horizon")
+def get_multi_horizon_forecast(ward: str):
+    conditions = generate_current_conditions(ward)
+    forecasts = prediction_agent.predict_multi_horizon(conditions)
+    return [
+        {
+            "horizon_hr": f.horizon_hr,
+            "predicted_aqi": f.predicted_aqi,
+            "lower_bound": f.lower_bound,
+            "upper_bound": f.upper_bound,
+            "confidence": f.confidence,
+        }
+        for f in forecasts
+    ]
+
+
+@app.get("/api/forecast/model-report")
+def get_forecast_model_report():
+    return _prediction_metrics
+
+
+# ---------- Feature 3: AI Intervention Recommendation Engine ----------
+
+class RecommendationRequest(BaseModel):
+    ward: str
+    source: str  # traffic / construction / industrial / dust / stubble_burning
+    forecast_aqi: float
+    festival_context: Optional[str] = None
+
+
+@app.post("/api/recommendations")
+def get_recommendations(req: RecommendationRequest):
+    bundle = recommendation_agent.recommend(
+        ward=req.ward, source=req.source, forecast_aqi=req.forecast_aqi, festival_context=req.festival_context
+    )
+    return {
+        "ward": bundle.ward,
+        "source": bundle.source,
+        "severity": bundle.severity,
+        "forecast_aqi": bundle.forecast_aqi,
+        "festival_context": bundle.festival_context,
+        "actions": [
+            {"action": a.action, "responsible_role": a.responsible_role, "urgency_hours": a.urgency_hours}
+            for a in bundle.actions
+        ],
+    }
+
+
+@app.get("/api/recommendations/{ward}")
+def get_recommendations_from_pipeline(ward: str):
+    """
+    Convenience endpoint: chains attribution + forecast automatically to
+    produce recommendations without the caller needing to run each agent
+    manually first. Uses each ward's synthetic hotspot row for attribution.
+    """
+    import pandas as pd
+    ward_hotspots = _training_df[_training_df["ward"] == ward]
+    if ward_hotspots.empty:
+        raise HTTPException(status_code=404, detail=f"No hotspot data for ward '{ward}'")
+    attribution = attribution_agent.attribute(ward_hotspots.iloc[0])
+
+    conditions = generate_current_conditions(ward)
+    forecast = prediction_agent.predict(conditions, horizon_hr=24)
+
+    bundle = recommendation_agent.recommend_from_attribution_and_forecast(attribution, forecast)
+    return {
+        "ward": bundle.ward,
+        "attributed_source": attribution.predicted_source,
+        "attribution_confidence": attribution.confidence,
+        "forecast_aqi": forecast.predicted_aqi,
+        "severity": bundle.severity,
+        "actions": [
+            {"action": a.action, "responsible_role": a.responsible_role, "urgency_hours": a.urgency_hours}
+            for a in bundle.actions
+        ],
+    }
+
+
+# ---------- Feature 4: Smart Enforcement Prioritization ----------
+
+@app.get("/api/enforcement/queue")
+def get_enforcement_queue(top_n: int = 10):
+    # Ward severity comes from the Prediction Agent's forecast for each ward.
+    severity_map = {}
+    for ward in _emission_sources_df["ward"].unique():
+        conditions = generate_current_conditions(ward)
+        forecast = prediction_agent.predict(conditions, horizon_hr=24)
+        severity_map[ward] = recommendation_agent.severity_band(forecast.predicted_aqi)
+
+    ranked = enforcement_agent.prioritize(_emission_sources_df, severity_map)
+    return [
+        {
+            "source_id": r.source_id,
+            "name": r.name,
+            "ward": r.ward,
+            "type": r.type,
+            "priority_score": r.priority_score,
+            "reasons": r.reasons,
+        }
+        for r in ranked[:top_n]
+    ]
+
+
+# ---------- Feature 11: Emergency Pollution Detection (ward-level convenience) ----------
+
+@app.get("/api/emergency/check/{ward}")
+def check_emergency(ward: str, simulate_spike: bool = False):
+    """Ward-level convenience wrapper: generates a synthetic station reading
+    series for the ward and runs the station-keyed spike detector."""
+    series = generate_station_reading_series(station_id=hash(ward) % 1000, spike=simulate_spike)
+    alert = emergency_agent.check_station(series)
+    if alert is None:
+        return {"ward": ward, "emergency": False}
+    return {
+        "ward": ward,
+        "emergency": True,
+        "timestamp": alert.timestamp,
+        "pm25": alert.pm25,
+        "aqi": alert.aqi,
+        "zscore": alert.zscore,
+        "trigger_types": alert.trigger_types,
+        "priority": alert.priority,
+        "message": alert.message,
+    }
+
+
+@app.get("/api/emergency/check-all")
+def check_all_emergencies():
+    from data.mock_data import WARDS
+    # Generate one synthetic station per ward; Ward-5 gets a spike
+    readings_by_station = {
+        i: generate_station_reading_series(station_id=i, spike=(ward == "Ward-5"))
+        for i, ward in enumerate(WARDS, start=1)
+    }
+    ward_lookup = {i: ward for i, ward in enumerate(WARDS, start=1)}
+    alerts = emergency_agent.check_all_stations(readings_by_station)
+    return [
+        {
+            "ward": ward_lookup.get(a.station_id, f"Ward-{a.station_id}"),
+            "station_id": a.station_id,
+            "trigger_types": a.trigger_types,
+            "aqi": a.aqi,
+            "priority": a.priority,
+            "message": a.message,
+        }
+        for a in alerts
+    ]
+>>>>>>> 2d6a8ab (minor updates)
