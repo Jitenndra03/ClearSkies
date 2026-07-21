@@ -16,39 +16,112 @@ logger = logging.getLogger(__name__)
 
 LATEST_WEATHER = {"wind_speed": 0, "temperature": 25, "humidity": 50}
 
+def compute_aqi_from_pm25(pm25: float) -> int:
+    """
+    CPCB India's official sub-index breakpoints for PM2.5 (24-hr avg,
+    ug/m3) -> AQI, linearly interpolated within each band. The raw CPCB
+    feed doesn't return a precomputed AQI field at all (confirmed via
+    direct API testing -- only pollutant_id/pollutant_avg per row), so
+    this derives it the same way CPCB itself does for the PM2.5 sub-index.
+    """
+    breakpoints = [
+        (0, 30, 0, 50),
+        (31, 60, 51, 100),
+        (61, 90, 101, 200),
+        (91, 120, 201, 300),
+        (121, 250, 301, 400),
+        (251, 500, 401, 500),
+    ]
+    pm25 = max(0, pm25)
+    for bp_lo, bp_hi, aqi_lo, aqi_hi in breakpoints:
+        if bp_lo <= pm25 <= bp_hi:
+            return round(((aqi_hi - aqi_lo) / (bp_hi - bp_lo)) * (pm25 - bp_lo) + aqi_lo)
+    return 500  # cap at severe for anything beyond the table
+
+
 def fetch_cpcb_aqi():
+    """
+    CPCB's feed returns ONE ROW PER (station, pollutant) -- not one row
+    per station. The previous version treated every row as if it were a
+    complete station reading and read a nonexistent "aqi" field (silently
+    becoming 0 for every single record) plus copied whatever pollutant
+    happened to be in that row straight into "pm25" regardless of what
+    pollutant_id actually said. This pivots rows by station first, then
+    computes AQI properly from the PM2.5 sub-reading once all of a
+    station's pollutants are collected.
+    """
     try:
         endpoint = "https://api.data.gov.in/resource/3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"
         params = {
             "api-key": os.environ.get("CPCB_API_KEY", ""),
             "format": "json",
             "filters[state]": "Delhi",
-            "limit": 100
+            "limit": 500
         }
-        res = requests.get(endpoint, params=params, timeout=10)
+        headers = {"User-Agent": "curl/8.5.0"}
+        res = requests.get(endpoint, params=params, headers=headers, timeout=30)
+
         if res.status_code != 200:
+            logger.warning(f"CPCB API returned {res.status_code}: {res.text[:200]}")
             return None
         data = res.json()
         if "records" not in data:
             return None
-        
-        parsed = []
+
+        # Pivot: group the (station, pollutant) rows into one entry per station.
+        stations = {}
         for record in data["records"]:
             try:
                 lat = float(record.get("latitude", 0))
                 lon = float(record.get("longitude", 0))
-                if lat == 0 or lon == 0:
-                    continue
-                parsed.append({
-                    "station_name": record.get("station"),
-                    "lat": lat,
-                    "lon": lon,
-                    "pm25": float(record.get("pollutant_avg", 0)),
-                    "aqi": int(record.get("aqi", 0)),
-                    "timestamp": datetime.utcnow()
-                })
-            except Exception as e:
-                logger.warning(f"Failed to parse CPCB record: {e}")
+            except (TypeError, ValueError):
+                continue
+            if lat == 0 or lon == 0:
+                continue
+
+            key = record.get("station")
+            entry = stations.setdefault(key, {
+                "station_name": key, "lat": lat, "lon": lon,
+                "pm25": None, "pm10": None, "no2": None, "so2": None, "co": None, "o3": None,
+            })
+
+            pollutant = (record.get("pollutant_id") or "").strip().lower()
+            raw_avg = record.get("avg_value")
+            try:
+                avg = float(raw_avg)
+            except (TypeError, ValueError):
+                continue
+
+            if pollutant in ("pm2.5", "pm25"):
+                entry["pm25"] = avg
+            elif pollutant == "pm10":
+                entry["pm10"] = avg
+            elif pollutant == "no2":
+                entry["no2"] = avg
+            elif pollutant == "so2":
+                entry["so2"] = avg
+            elif pollutant == "co":
+                entry["co"] = avg
+            elif pollutant in ("ozone", "o3"):
+                entry["o3"] = avg
+
+        parsed = []
+        for entry in stations.values():
+            if entry["pm25"] is None:
+                # Can't compute a meaningful AQI without PM2.5 -- skip rather
+                # than silently writing aqi=0, which would look like a real
+                # "Good" reading instead of "no data."
+                logger.info(f"Skipping station '{entry['station_name']}': no PM2.5 reading in this pull.")
+                continue
+            parsed.append({
+                "station_name": entry["station_name"],
+                "lat": entry["lat"],
+                "lon": entry["lon"],
+                "pm25": entry["pm25"],
+                "pm10": entry["pm10"] if entry["pm10"] is not None else entry["pm25"] * 1.5,
+                "aqi": compute_aqi_from_pm25(entry["pm25"]),
+                "timestamp": datetime.utcnow()
+            })
         return parsed
     except Exception as e:
         logger.warning(f"CPCB fetch failed: {e}")
@@ -98,7 +171,10 @@ def fetch_openaq_fallback():
 def fetch_weather():
     global LATEST_WEATHER
     try:
-        endpoint = "https://api.open-meteo.com/v1/forecast"
+        endpoint = os.getenv(
+            "OPEN_METEO_URL",
+            "https://api.open-meteo.com/v1/forecast"
+        )
         params = {
             "latitude": 28.6139,
             "longitude": 77.2090,
@@ -125,12 +201,23 @@ def fetch_firms_data():
         if not api_key:
             logger.info("NASA_FIRMS_MAP_KEY not set. Skipping FIRMS integration.")
             return []
-            
-        # NRT VIIRS 375m data for India (IND) for the last 1 day
-        endpoint = f"https://firms.modaps.eosdis.nasa.gov/api/country/csv/{api_key}/VIIRS_SNPP_NRT/IND/1"
+
+        # The country/csv endpoint returns "Invalid API call." for this
+        # account/key (confirmed via direct curl testing), so this uses
+        # area/csv instead -- bbox format is west,south,east,north.
+        # Defaults to the Delhi-area bbox matching this ingestion script's
+        # DELHI_WARDS; override via .env if you point ingestion at a
+        # different city.
+        west = os.environ.get("CITY_BBOX_WEST", "76.8")
+        south = os.environ.get("CITY_BBOX_SOUTH", "28.4")
+        east = os.environ.get("CITY_BBOX_EAST", "77.4")
+        north = os.environ.get("CITY_BBOX_NORTH", "28.8")
+        bbox = f"{west},{south},{east},{north}"
+
+        endpoint = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{api_key}/VIIRS_SNPP_NRT/{bbox}/1"
         res = requests.get(endpoint, timeout=15)
         if res.status_code != 200:
-            logger.warning(f"FIRMS API returned {res.status_code}")
+            logger.warning(f"FIRMS API returned {res.status_code}: {res.text[:200]}")
             return []
             
         csv_data = StringIO(res.text)

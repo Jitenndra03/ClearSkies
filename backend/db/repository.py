@@ -32,7 +32,8 @@ def fetch_hotspot_features(limit: int = 500) -> pd.DataFrame:
             h.industrial_stack_count,
             h.thermal_anomaly_count,
             h.dust_landuse_pct,
-            h.pm25
+            h.pm25,
+            h.source_label AS source_label
         FROM hotspots h
         JOIN wards w ON w.id = h.ward_id
         ORDER BY h.detected_at DESC
