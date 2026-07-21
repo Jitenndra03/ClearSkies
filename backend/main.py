@@ -14,7 +14,7 @@ Docs: http://localhost:8000/docs
 
 import sys
 import os
-
+import pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 from fastapi import FastAPI, HTTPException
@@ -78,7 +78,7 @@ if USING_REAL_DB:
     # data sources to real DB. Adjust the two lines below once you have
     # labeled hotspot data to train on.
     from db.repository import fetch_hotspot_features, fetch_historical_aqi
-    _training_df = fetch_hotspot_features()  # swap to a labeled real query once available
+    _training_df = generate_hotspot_features()  # swap to a labeled real query once available
     _historical_df = fetch_historical_aqi()
 else:
     _training_df = generate_hotspot_features()
@@ -369,14 +369,6 @@ async def shutdown_event():
     import logging
     logging.info("Ingestion scheduler stopped")
 
-@app.post("/api/ingest/trigger")
-def trigger_ingestion_manual():
-    try:
-        run_ingestion()
-        return {"success": True, "message": "Ingestion completed successfully"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
 
 @app.get("/api/forecast/{ward}/multi-horizon")
 def get_multi_horizon_forecast(ward: str):
@@ -433,7 +425,6 @@ def get_recommendations_from_pipeline(ward: str):
     produce recommendations without the caller needing to run each agent
     manually first. Uses each ward's synthetic hotspot row for attribution.
     """
-    import pandas as pd
     ward_hotspots = _training_df[_training_df["ward"] == ward]
     if ward_hotspots.empty:
         raise HTTPException(status_code=404, detail=f"No hotspot data for ward '{ward}'")
@@ -459,7 +450,7 @@ def get_recommendations_from_pipeline(ward: str):
 # ---------- Feature 4: Smart Enforcement Prioritization ----------
 
 @app.get("/api/enforcement/queue")
-def get_enforcement_queue_ranked(top_n: int = 10):
+def get_enforcement_queue(top_n: int = 10):
     # Ward severity comes from the Prediction Agent's forecast for each ward.
     severity_map = {}
     for ward in _emission_sources_df["ward"].unique():

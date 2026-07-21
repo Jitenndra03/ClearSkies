@@ -343,9 +343,15 @@ def run_ingestion():
             for h in hotspots:
                 ward_sql = text("SELECT id FROM wards WHERE ST_Contains(geometry, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1")
                 ward_id = conn.execute(ward_sql, {"lon": h["lon"], "lat": h["lat"]}).scalar()
+                logger.info(
+                            f"{h['name']} | AQI={h['aqi']} | ward_id={ward_id}"
+                            )
                 if ward_id is not None:
+                    logger.info(f"Inserting hotspot for {h['name']}")
+                    logger.info("Hotspot inserted")
                     anomaly_count = ward_anomaly_counts.get(ward_id, 0)
-                    conn.execute(insert_hotspot_sql, {"ward_id": ward_id, "lon": h["lon"], "lat": h["lat"], "anomaly_count": anomaly_count})
+                    result=conn.execute(insert_hotspot_sql, {"ward_id": ward_id, "lon": h["lon"], "lat": h["lat"], "anomaly_count": anomaly_count})
+                    logger.info(f"Rows inserted = {result.rowcount}")
                     
         except Exception as e:
             logger.error(f"Failed to detect/insert hotspots: {e}")
