@@ -12,6 +12,24 @@ const FILTER_OPTIONS = [
   { key: 'stubble_burning', label: '🌾 Stubble burning' },
 ];
 
+const ATTRIBUTION_FEATURES = [
+  'traffic_density_idx',
+  'construction_permit_density',
+  'industrial_stack_count',
+  'thermal_anomaly_count',
+  'dust_landuse_pct',
+  'pm25',
+];
+
+function hasCompleteAttributionFeatures(features) {
+  return ATTRIBUTION_FEATURES.every((key) => (
+    features[key] !== null
+    && features[key] !== undefined
+    && features[key] !== ''
+    && Number.isFinite(Number(features[key]))
+  ));
+}
+
 export default function HotspotsPage() {
   const [filter, setFilter] = useState('all');
   const [selectedId, setSelectedId] = useState(null);
@@ -60,6 +78,9 @@ export default function HotspotsPage() {
     async function fetchAttr() {
       try {
         const features = await getHotspotFeatures(selectedHotspot.id);
+        if (!hasCompleteAttributionFeatures(features)) {
+          throw new Error('This hotspot does not yet have the observed data needed for AI attribution.');
+        }
         const res = await postAttribution({ ...features, hotspot_id: Number(selectedHotspot.id) });
         if (mounted) {
           setAttribution(res);
@@ -67,7 +88,9 @@ export default function HotspotsPage() {
         }
       } catch (err) {
         if (mounted) {
-          setError(err.message);
+          setError(err.message.startsWith('This hotspot')
+            ? err.message
+            : 'Attribution is temporarily unavailable. Please try again shortly.');
           setIsLoading(false);
         }
       }
@@ -196,7 +219,7 @@ export default function HotspotsPage() {
               {selectedId === hotspot.id && (
                 <div style={{ gridColumn: '1 / -1', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--color-border)' }}>
                   <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '8px' }}>
-                    Live AI Attribution
+                    {error ? 'Attribution status' : 'Live AI Attribution'}
                   </div>
                   {isLoading ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-text-muted)' }}>
@@ -204,8 +227,8 @@ export default function HotspotsPage() {
                       <span style={{ fontSize: '0.8125rem' }}>Analyzing features...</span>
                     </div>
                   ) : error ? (
-                    <div style={{ color: 'var(--color-danger)', fontSize: '0.8125rem' }}>
-                      Failed to attribute source: {error}
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>
+                      {error}
                     </div>
                   ) : attribution ? (
                     <div>

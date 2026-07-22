@@ -8,7 +8,14 @@ export default function AnalyticsPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    Promise.all([getAnalytics(), getMultiCityComparison(), getAlerts()])
+    Promise.all([
+      getAnalytics(),
+      getMultiCityComparison(),
+      getAlerts().catch((err) => {
+        console.warn('Unable to load alerts:', err);
+        return [];
+      }),
+    ])
       .then(([summary, cities, recentAlerts]) => { setAnalytics(summary); setComparison(cities); setAlerts(recentAlerts); })
       .catch((err) => setError(err.message));
   }, []);

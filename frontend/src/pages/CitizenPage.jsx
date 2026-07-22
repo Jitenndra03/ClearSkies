@@ -18,7 +18,10 @@ export default function CitizenPage() {
   const [wards, setWards] = useState([]);
   const [selectedWard, setSelectedWard] = useState(null);
   const [hotspot, setHotspot] = useState(null);
-  const aqi = selectedWard?.aqi || 0;
+  // Ward readings may be returned as floating-point values. AQI is presented
+  // and classified as a whole-number CPCB index.
+  const rawAqi = Number(selectedWard?.aqi);
+  const aqi = Number.isFinite(rawAqi) ? Math.round(rawAqi) : 0;
   const aqiColor = getAqiColor(aqi);
 
   const [advisoryMsg, setAdvisoryMsg] = useState('');
@@ -61,10 +64,9 @@ export default function CitizenPage() {
           setAdvisoryMsg(result.message);
           setIsLoading(false);
         }
-      } catch {
+      } catch (err) {
         if (mounted) {
           console.error('Failed to fetch advisory:', err);
-          setError(err.message);
           setIsLoading(false);
           setAdvisoryMsg(lang === 'en' ? 'Live advisory is currently unavailable.' : 'लाइव सलाह अभी उपलब्ध नहीं है।');
         }
@@ -209,7 +211,7 @@ export default function CitizenPage() {
               {aqi ? getAqiLabel(aqi) : 'No live reading'}
             </div>
             <div style={{ marginTop: '8px' }}>
-              <span className={`aqi-badge ${getAqiBadgeClass(data.aqi)}`}>
+              <span className={`aqi-badge ${getAqiBadgeClass(aqi)}`}>
                 {selectedWard?.name || 'Loading ward…'}
               </span>
             </div>

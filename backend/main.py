@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -86,6 +87,20 @@ def _forecast_or_503(ward: str):
     if not conditions:
         raise HTTPException(404, f"No complete current conditions are available for '{ward}'.")
     return prediction_agent, conditions
+
+
+def _record_alert_dispatch(dispatch) -> None:
+    """Persist alert history without failing the user-facing response."""
+    try:
+        repository.insert_alert_log(
+            dispatch.recipient, dispatch.channel, dispatch.message,
+            dispatch.risk_level, dispatch.status,
+        )
+    except SQLAlchemyError:
+        logger.warning(
+            "Alert dispatch was not logged because alerts_log is unavailable; "
+            "apply db/migrations/005_operational_data.sql."
+        )
 
 
 class HotspotInput(BaseModel):
@@ -189,7 +204,7 @@ def get_advisory(req: AdvisoryRequest):
         repository.insert_advisory(advisory.ward, advisory.language, advisory.message, advisory.risk_level)
         dispatch = alert_agent.dispatch_advisory(advisory.ward, advisory.risk_level, advisory.message)
         if dispatch:
-            repository.insert_alert_log(dispatch.recipient, dispatch.channel, dispatch.message, dispatch.risk_level, dispatch.status)
+            _record_alert_dispatch(dispatch)
     return {"user_id": advisory.user_id, "ward": advisory.ward, "language": advisory.language,
             "risk_level": advisory.risk_level, "forecast_aqi": advisory.forecast_aqi, "message": advisory.message}
 
@@ -313,7 +328,14 @@ def get_ward_boundaries(city: Optional[str] = None):
 @app.get("/api/alerts")
 def get_alerts(limit: int = 50):
     _real_db_or_503()
-    return repository.fetch_recent_alerts(limit).to_dict("records")
+    try:
+        return repository.fetch_recent_alerts(limit).to_dict("records")
+    except SQLAlchemyError:
+        logger.warning(
+            "Alerts feed is unavailable because alerts_log is missing; "
+            "apply db/migrations/005_operational_data.sql."
+        )
+        return []
 
 
 @app.get("/api/emergency/check/{ward}")
@@ -325,7 +347,7 @@ def check_emergency(ward: str):
         alert = emergency_agent.check_station(series)
         if alert:
             dispatch = alert_agent.dispatch_emergency(ward, alert.message)
-            repository.insert_alert_log(dispatch.recipient, dispatch.channel, dispatch.message, dispatch.risk_level, dispatch.status)
+            _record_alert_dispatch(dispatch)
             return {"ward": ward, "emergency": True, "station_id": alert.station_id, "aqi": alert.aqi,
                     "trigger_types": alert.trigger_types, "priority": alert.priority, "message": alert.message}
     return {"ward": ward, "emergency": False}
