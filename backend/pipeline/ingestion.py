@@ -1,364 +1,252 @@
+"""Live data ingestion for stations, weather, OSM source features and hotspots."""
+
+import csv
+import logging
 import os
 import sys
-import requests
-import logging
 from datetime import datetime
+from io import StringIO
+from typing import Callable
+
+import requests
 from dotenv import load_dotenv
-
-# Setup paths and environment
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
-
 from sqlalchemy import create_engine, text
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-LATEST_WEATHER = {"wind_speed": 0, "temperature": 25, "humidity": 50}
+logger = logging.getLogger(__name__)
+LATEST_WEATHER = {"wind_speed": None, "temperature": None, "humidity": None}
+from agents.data_validation_agent import DataValidationAgent
+from agents.traffic_analysis_agent import TrafficAnalysisAgent
+
+validation_agent = DataValidationAgent()
+traffic_agent = TrafficAnalysisAgent()
+
 
 def compute_aqi_from_pm25(pm25: float) -> int:
-    """
-    CPCB India's official sub-index breakpoints for PM2.5 (24-hr avg,
-    ug/m3) -> AQI, linearly interpolated within each band. The raw CPCB
-    feed doesn't return a precomputed AQI field at all (confirmed via
-    direct API testing -- only pollutant_id/pollutant_avg per row), so
-    this derives it the same way CPCB itself does for the PM2.5 sub-index.
-    """
-    breakpoints = [
-        (0, 30, 0, 50),
-        (31, 60, 51, 100),
-        (61, 90, 101, 200),
-        (91, 120, 201, 300),
-        (121, 250, 301, 400),
-        (251, 500, 401, 500),
-    ]
-    pm25 = max(0, pm25)
-    for bp_lo, bp_hi, aqi_lo, aqi_hi in breakpoints:
-        if bp_lo <= pm25 <= bp_hi:
-            return round(((aqi_hi - aqi_lo) / (bp_hi - bp_lo)) * (pm25 - bp_lo) + aqi_lo)
-    return 500  # cap at severe for anything beyond the table
+    breakpoints = [(0, 30, 0, 50), (31, 60, 51, 100), (61, 90, 101, 200),
+                   (91, 120, 201, 300), (121, 250, 301, 400), (251, 500, 401, 500)]
+    for low, high, aqi_low, aqi_high in breakpoints:
+        if low <= pm25 <= high:
+            return round((aqi_high - aqi_low) * (pm25 - low) / (high - low) + aqi_low)
+    return 500 if pm25 > 500 else 0
 
 
 def fetch_cpcb_aqi():
-    """
-    CPCB's feed returns ONE ROW PER (station, pollutant) -- not one row
-    per station. The previous version treated every row as if it were a
-    complete station reading and read a nonexistent "aqi" field (silently
-    becoming 0 for every single record) plus copied whatever pollutant
-    happened to be in that row straight into "pm25" regardless of what
-    pollutant_id actually said. This pivots rows by station first, then
-    computes AQI properly from the PM2.5 sub-reading once all of a
-    station's pollutants are collected.
-    """
+    """Fetch PM2.5 measurements from CPCB and calculate their CPCB sub-index."""
     try:
-        endpoint = "https://api.data.gov.in/resource/3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"
-        params = {
-            "api-key": os.environ.get("CPCB_API_KEY", ""),
-            "format": "json",
-            "filters[state]": "Delhi",
-            "limit": 500
-        }
-        headers = {"User-Agent": "curl/8.5.0"}
-        res = requests.get(endpoint, params=params, headers=headers, timeout=30)
-
-        if res.status_code != 200:
-            logger.warning(f"CPCB API returned {res.status_code}: {res.text[:200]}")
-            return None
-        data = res.json()
-        if "records" not in data:
-            return None
-
-        # Pivot: group the (station, pollutant) rows into one entry per station.
-        stations = {}
-        for record in data["records"]:
-            try:
-                lat = float(record.get("latitude", 0))
-                lon = float(record.get("longitude", 0))
-            except (TypeError, ValueError):
-                continue
-            if lat == 0 or lon == 0:
-                continue
-
-            key = record.get("station")
-            entry = stations.setdefault(key, {
-                "station_name": key, "lat": lat, "lon": lon,
-                "pm25": None, "pm10": None, "no2": None, "so2": None, "co": None, "o3": None,
-            })
-
-            pollutant = (record.get("pollutant_id") or "").strip().lower()
-            raw_avg = record.get("avg_value")
-            try:
-                avg = float(raw_avg)
-            except (TypeError, ValueError):
-                continue
-
-            if pollutant in ("pm2.5", "pm25"):
-                entry["pm25"] = avg
-            elif pollutant == "pm10":
-                entry["pm10"] = avg
-            elif pollutant == "no2":
-                entry["no2"] = avg
-            elif pollutant == "so2":
-                entry["so2"] = avg
-            elif pollutant == "co":
-                entry["co"] = avg
-            elif pollutant in ("ozone", "o3"):
-                entry["o3"] = avg
-
-        parsed = []
-        for entry in stations.values():
-            if entry["pm25"] is None:
-                # Can't compute a meaningful AQI without PM2.5 -- skip rather
-                # than silently writing aqi=0, which would look like a real
-                # "Good" reading instead of "no data."
-                logger.info(f"Skipping station '{entry['station_name']}': no PM2.5 reading in this pull.")
-                continue
-            parsed.append({
-                "station_name": entry["station_name"],
-                "lat": entry["lat"],
-                "lon": entry["lon"],
-                "pm25": entry["pm25"],
-                "pm10": entry["pm10"] if entry["pm10"] is not None else entry["pm25"] * 1.5,
-                "aqi": compute_aqi_from_pm25(entry["pm25"]),
-                "timestamp": datetime.utcnow()
-            })
-        return parsed
-    except Exception as e:
-        logger.warning(f"CPCB fetch failed: {e}")
-        return None
-
-def fetch_openaq_fallback():
-    try:
-        endpoint = "https://api.openaq.org/v2/latest"
-        params = {"city": "Delhi", "limit": 50, "parameter": "pm25"}
-        res = requests.get(endpoint, params=params, timeout=10)
-        if res.status_code != 200:
-            return None
-        data = res.json()
-        if "results" not in data:
-            return None
-        
-        parsed = []
-        for r in data["results"]:
-            try:
-                coords = r.get("coordinates", {})
-                lat = float(coords.get("latitude", 0))
-                lon = float(coords.get("longitude", 0))
-                if lat == 0 or lon == 0:
-                    continue
-                
-                pm25 = 0
-                for m in r.get("measurements", []):
-                    if m.get("parameter") == "pm25":
-                        pm25 = float(m.get("value", 0))
-                        break
-                
-                parsed.append({
-                    "station_name": r.get("location"),
-                    "lat": lat,
-                    "lon": lon,
-                    "pm25": pm25,
-                    "aqi": int(pm25 * 3), # Rough mockup if AQI not present
-                    "timestamp": datetime.utcnow()
-                })
-            except Exception as e:
-                logger.warning(f"Failed to parse OpenAQ record: {e}")
-        return parsed
-    except Exception as e:
-        logger.warning(f"OpenAQ fallback failed: {e}")
-        return None
-
-def fetch_weather():
-    global LATEST_WEATHER
-    try:
-        endpoint = os.getenv(
-            "OPEN_METEO_URL",
-            "https://api.open-meteo.com/v1/forecast"
+        response = requests.get(
+            "https://api.data.gov.in/resource/3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69",
+            params={"api-key": os.getenv("CPCB_API_KEY", ""), "format": "json",
+                    "filters[state]": os.getenv("CITY_STATE", "Delhi"), "limit": 500},
+            headers={"User-Agent": "ClearSkies/1.0"}, timeout=30,
         )
-        params = {
-            "latitude": 28.6139,
-            "longitude": 77.2090,
-            "current_weather": True,
-            "hourly": "relativehumidity_2m,windspeed_10m,temperature_2m",
-            "forecast_days": 1
-        }
-        res = requests.get(endpoint, params=params, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            hourly = data.get("hourly", {})
-            LATEST_WEATHER["wind_speed"] = hourly.get("windspeed_10m", [0])[0]
-            LATEST_WEATHER["temperature"] = hourly.get("temperature_2m", [25])[0]
-            LATEST_WEATHER["humidity"] = hourly.get("relativehumidity_2m", [50])[0]
-    except Exception as e:
-        logger.warning(f"Weather fetch failed, using defaults. Error: {e}")
-
-import csv
-from io import StringIO
-
-def fetch_firms_data():
-    try:
-        api_key = os.environ.get("NASA_FIRMS_MAP_KEY")
-        if not api_key:
-            logger.info("NASA_FIRMS_MAP_KEY not set. Skipping FIRMS integration.")
-            return []
-
-        # The country/csv endpoint returns "Invalid API call." for this
-        # account/key (confirmed via direct curl testing), so this uses
-        # area/csv instead -- bbox format is west,south,east,north.
-        # Defaults to the Delhi-area bbox matching this ingestion script's
-        # DELHI_WARDS; override via .env if you point ingestion at a
-        # different city.
-        west = os.environ.get("CITY_BBOX_WEST", "76.8")
-        south = os.environ.get("CITY_BBOX_SOUTH", "28.4")
-        east = os.environ.get("CITY_BBOX_EAST", "77.4")
-        north = os.environ.get("CITY_BBOX_NORTH", "28.8")
-        bbox = f"{west},{south},{east},{north}"
-
-        endpoint = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{api_key}/VIIRS_SNPP_NRT/{bbox}/1"
-        res = requests.get(endpoint, timeout=15)
-        if res.status_code != 200:
-            logger.warning(f"FIRMS API returned {res.status_code}: {res.text[:200]}")
-            return []
-            
-        csv_data = StringIO(res.text)
-        reader = csv.DictReader(csv_data)
-        
-        anomalies = []
-        for row in reader:
+        response.raise_for_status()
+        stations = {}
+        for record in response.json().get("records", []):
             try:
-                lat = float(row['latitude'])
-                lon = float(row['longitude'])
-                anomalies.append({"lat": lat, "lon": lon})
-            except (KeyError, ValueError):
+                lat, lon = float(record["latitude"]), float(record["longitude"])
+                value = float(record.get("avg_value"))
+            except (KeyError, TypeError, ValueError):
                 continue
-                
-        return anomalies
-    except Exception as e:
-        logger.warning(f"Failed to fetch FIRMS data: {e}")
+            if not lat or not lon or (record.get("pollutant_id") or "").lower().replace(".", "") not in {"pm25", "pm2.5"}:
+                continue
+            name = record.get("station") or record.get("station_name")
+            if name:
+                stations[name] = {"station_name": name, "lat": lat, "lon": lon, "pm25": value,
+                                  "aqi": compute_aqi_from_pm25(value), "timestamp": datetime.utcnow()}
+        return list(stations.values())
+    except Exception as exc:
+        logger.warning("CPCB fetch failed: %s", exc)
         return []
 
-def run_ingestion():
-    logger.info("Ingestion started")
-    
-    # Step 1 & 2
-    records = fetch_cpcb_aqi()
-    if records is None or len(records) == 0:
-        logger.warning("CPCB data invalid or missing, falling back to OpenAQ")
-        records = fetch_openaq_fallback()
-        if records is None:
-            logger.warning("Both CPCB and OpenAQ failed. Falling back to mock live data.")
-            import random
-            records = []
-            for i in range(1, 11):
-                lat = 28.6 + random.uniform(-0.1, 0.1)
-                lon = 77.2 + random.uniform(-0.1, 0.1)
-                pm25 = random.uniform(50, 300)
-                records.append({
-                    "station_name": f"Mock Station {i}",
-                    "lat": lat,
-                    "lon": lon,
-                    "pm25": pm25,
-                    "aqi": int(pm25 * 1.5),
-                    "timestamp": datetime.utcnow()
-                })
 
-    logger.info(f"Fetched {len(records)} records")
+def fetch_openaq_fallback():
+    """OpenAQ v3 fallback. It is disabled unless an API key is configured."""
+    api_key = os.getenv("OPENAQ_API_KEY")
+    if not api_key:
+        return []
+    try:
+        response = requests.get(
+            "https://api.openaq.org/v3/latest",
+            params={"limit": 100, "parameters_id": 2},
+            headers={"X-API-Key": api_key, "User-Agent": "ClearSkies/1.0"}, timeout=20,
+        )
+        response.raise_for_status()
+        records = []
+        for item in response.json().get("results", []):
+            coords = item.get("coordinates") or {}
+            pm25 = next((m.get("value") for m in item.get("sensors", [])
+                         if m.get("parameter", {}).get("name") == "pm25"), None)
+            try:
+                lat, lon, pm25 = float(coords["latitude"]), float(coords["longitude"]), float(pm25)
+            except (KeyError, TypeError, ValueError):
+                continue
+            records.append({"station_name": item.get("location", "OpenAQ station"), "lat": lat, "lon": lon,
+                            "pm25": pm25, "aqi": compute_aqi_from_pm25(pm25), "timestamp": datetime.utcnow()})
+        return records
+    except Exception as exc:
+        logger.warning("OpenAQ v3 fetch failed: %s", exc)
+        return []
 
-    # Step 3
+
+def fetch_weather():
+    try:
+        response = requests.get(
+            os.getenv("OPEN_METEO_URL", "https://api.open-meteo.com/v1/forecast"),
+            params={"latitude": os.getenv("CITY_LAT", "28.6139"), "longitude": os.getenv("CITY_LON", "77.2090"),
+                    "current": "temperature_2m,relative_humidity_2m,wind_speed_10m"}, timeout=15,
+        )
+        response.raise_for_status()
+        current = response.json().get("current", {})
+        LATEST_WEATHER.update({"wind_speed": current.get("wind_speed_10m"),
+                               "temperature": current.get("temperature_2m"),
+                               "humidity": current.get("relative_humidity_2m")})
+    except Exception as exc:
+        logger.warning("Weather fetch failed; readings will retain null weather fields: %s", exc)
+
+
+def fetch_firms_data():
+    key = os.getenv("NASA_FIRMS_MAP_KEY")
+    if not key:
+        return []
+    try:
+        bbox = ",".join([os.getenv("CITY_BBOX_WEST", "76.8"), os.getenv("CITY_BBOX_SOUTH", "28.4"),
+                         os.getenv("CITY_BBOX_EAST", "77.4"), os.getenv("CITY_BBOX_NORTH", "28.8")])
+        response = requests.get(
+            f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/VIIRS_SNPP_NRT/{bbox}/1", timeout=20
+        )
+        response.raise_for_status()
+        return [{"lat": float(row["latitude"]), "lon": float(row["longitude"])}
+                for row in csv.DictReader(StringIO(response.text))]
+    except Exception as exc:
+        logger.warning("FIRMS fetch failed: %s", exc)
+        return []
+
+
+def _station_upsert(conn, record):
+    return conn.execute(text("""
+        INSERT INTO stations (name, lat, lon, ward_id, source)
+        VALUES (:name, :lat, :lon,
+                (SELECT id FROM wards WHERE ST_Covers(geometry, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1),
+                :source)
+        ON CONFLICT (name) DO UPDATE SET lat = EXCLUDED.lat, lon = EXCLUDED.lon,
+            ward_id = COALESCE(EXCLUDED.ward_id, stations.ward_id), source = EXCLUDED.source
+        RETURNING id
+    """), {"name": record["station_name"], "lat": record["lat"], "lon": record["lon"],
+            "source": record.get("source", "cpcb")}).scalar_one()
+
+
+def sync_overpass_sources(conn):
+    """Refresh OSM industrial, construction and primary-road features at most once a day."""
+    recent = conn.execute(text("SELECT max(last_inspected) FROM emission_sources WHERE external_id LIKE 'osm:%'")) .scalar()
+    if recent and (datetime.utcnow() - recent.replace(tzinfo=None)).total_seconds() < 86400:
+        return 0
+    try:
+        from pipeline.overpass_pull import fetch_osm_features
+        bbox = (float(os.getenv("CITY_BBOX_SOUTH", "28.4")), float(os.getenv("CITY_BBOX_WEST", "76.8")),
+                float(os.getenv("CITY_BBOX_NORTH", "28.8")), float(os.getenv("CITY_BBOX_EAST", "77.4")))
+        written = 0
+        for source_type in ("industrial", "construction", "highway"):
+            gdf = fetch_osm_features(bbox, source_type)
+            db_type = "traffic" if source_type == "highway" else source_type
+            for _, feature in gdf.iterrows():
+                external_id = f"osm:{source_type}:{feature.get('osm_id', '')}"
+                if external_id.endswith(":"):
+                    continue
+                conn.execute(text("""
+                    INSERT INTO emission_sources (type, name, geometry, permit_status, last_inspected, external_id)
+                    VALUES (:type, :name, ST_SetSRID(ST_GeomFromText(:geometry), 4326), 'unregistered', now(), :external_id)
+                    ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO UPDATE
+                    SET geometry = EXCLUDED.geometry, last_inspected = EXCLUDED.last_inspected
+                """), {"type": db_type, "name": feature.get("name") or f"OSM {db_type}",
+                       "geometry": feature.geometry.wkt, "external_id": external_id})
+                written += 1
+        return written
+    except Exception as exc:
+        logger.warning("OSM feature refresh failed; retaining prior features: %s", exc)
+        return 0
+
+
+def _hotspot_features(conn, ward_id: int, pm25: float, anomaly_count: int) -> dict:
+    row = conn.execute(text("""
+        SELECT LEAST(1.0, count(*) FILTER (WHERE type = 'traffic') / 20.0) AS traffic_density_idx,
+               count(*) FILTER (WHERE type = 'construction') / 10.0 AS construction_permit_density,
+               count(*) FILTER (WHERE type = 'industrial')::int AS industrial_stack_count
+        FROM emission_sources es
+        WHERE ST_Covers((SELECT geometry FROM wards WHERE id = :ward_id), ST_PointOnSurface(es.geometry))
+    """), {"ward_id": ward_id}).mappings().one()
+    return {"traffic_density_idx": traffic_agent.road_density_index(int((row["traffic_density_idx"] or 0) * 20)),
+            "construction_permit_density": float(row["construction_permit_density"] or 0),
+            "industrial_stack_count": int(row["industrial_stack_count"] or 0),
+            "thermal_anomaly_count": anomaly_count, "dust_landuse_pct": 0.0, "pm25": float(pm25)}
+
+
+def run_ingestion(attribute_hotspot: Callable[[dict], tuple[str, float]] | None = None):
+    """Ingest only observed source data. A failed feed writes nothing, never synthetic rows."""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        logger.info("Ingestion skipped: DATABASE_URL is not configured.")
+        return {"rows_written": 0, "hotspots": 0, "reason": "database_not_configured"}
+    records = fetch_cpcb_aqi() or fetch_openaq_fallback()
+    if not records:
+        logger.warning("No live AQI records available; database left unchanged.")
+        return {"rows_written": 0, "hotspots": 0, "reason": "no_live_records"}
     fetch_weather()
-    
-    # Step 4
-    engine = create_engine(os.environ.get("DATABASE_URL"))
-    rows_written = 0
+    engine = create_engine(database_url, connect_args={"connect_timeout": 10})
+    written = hotspots_written = 0
     with engine.begin() as conn:
-        for r in records:
-            try:
-                # Upsert station
-                station_sql = text("""
-                    INSERT INTO stations (name, lat, lon)
-                    VALUES (:name, :lat, :lon)
-                    ON CONFLICT (name) DO UPDATE SET lat=EXCLUDED.lat, lon=EXCLUDED.lon
-                    RETURNING id
-                """)
-                st_res = conn.execute(station_sql, {"name": r["station_name"], "lat": r["lat"], "lon": r["lon"]})
-                station_id = st_res.scalar()
+        sync_overpass_sources(conn)
+        for record in records:
+            validation = validation_agent.validate_reading(record)
+            if not validation.valid:
+                logger.warning("Skipping invalid reading from %s: %s", record.get("station_name"), validation.reason)
+                continue
+            station_id = _station_upsert(conn, record)
+            conn.execute(text("""
+                INSERT INTO readings (station_id, timestamp, pm25, pm10, aqi, wind_speed, temperature, humidity)
+                VALUES (:station_id, :timestamp, :pm25, :pm10, :aqi, :wind_speed, :temperature, :humidity)
+                ON CONFLICT (station_id, timestamp) DO NOTHING
+            """), {"station_id": station_id, "timestamp": record["timestamp"], "pm25": record["pm25"],
+                   "pm10": record.get("pm10"), "aqi": record["aqi"], **LATEST_WEATHER})
+            written += 1
+        anomalies = {}
+        for fire in fetch_firms_data():
+            ward_id = conn.execute(text("SELECT id FROM wards WHERE ST_Covers(geometry, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1"), fire).scalar()
+            if ward_id:
+                anomalies[ward_id] = anomalies.get(ward_id, 0) + 1
+        readings = conn.execute(text("""
+            SELECT DISTINCT ON (s.ward_id) s.ward_id, s.lat, s.lon, r.pm25, r.aqi
+            FROM readings r JOIN stations s ON s.id = r.station_id
+            WHERE s.ward_id IS NOT NULL AND r.timestamp >= now() - interval '2 hours' AND r.aqi > 150
+            ORDER BY s.ward_id, r.aqi DESC
+        """)).mappings().all()
+        for reading in readings:
+            features = _hotspot_features(conn, reading["ward_id"], reading["pm25"], anomalies.get(reading["ward_id"], 0))
+            source, confidence = "unknown", 0.0
+            if attribute_hotspot:
+                try:
+                    source, confidence = attribute_hotspot(features)
+                except Exception as exc:
+                    logger.info("Attribution unavailable for ward %s: %s", reading["ward_id"], exc)
+            hotspot_id = conn.execute(text("""
+                INSERT INTO hotspots (ward_id, geometry, attributed_source, confidence_score, detected_at,
+                    traffic_density_idx, construction_permit_density, industrial_stack_count,
+                    thermal_anomaly_count, dust_landuse_pct, pm25)
+                VALUES (:ward_id, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), :source, :confidence, now(),
+                    :traffic_density_idx, :construction_permit_density, :industrial_stack_count,
+                    :thermal_anomaly_count, :dust_landuse_pct, :pm25)
+                RETURNING id
+            """), {**dict(reading), **features, "source": source, "confidence": confidence}).scalar_one()
+            conn.execute(text("""
+                INSERT INTO enforcement_queue (hotspot_id, priority_score, status)
+                VALUES (:hotspot_id, :priority_score, 'pending')
+            """), {"hotspot_id": hotspot_id, "priority_score": round((reading["aqi"] / 500) * confidence, 3)})
+            hotspots_written += 1
+    logger.info("Ingestion finished: %s readings and %s hotspots written", written, hotspots_written)
+    return {"rows_written": written, "hotspots": hotspots_written}
 
-                # Insert reading
-                readings_sql = text("""
-                    INSERT INTO readings (station_id, timestamp, pm25, pm10, aqi, wind_speed, temperature, humidity)
-                    VALUES (:station_id, :timestamp, :pm25, :pm10, :aqi, :wind_speed, :temperature, :humidity)
-                    ON CONFLICT DO NOTHING
-                """)
-                conn.execute(readings_sql, {
-                    "station_id": station_id,
-                    "timestamp": r["timestamp"],
-                    "pm25": r["pm25"],
-                    "pm10": r.get("pm10", r["pm25"] * 1.5),
-                    "aqi": r["aqi"],
-                    "wind_speed": LATEST_WEATHER["wind_speed"],
-                    "temperature": LATEST_WEATHER["temperature"],
-                    "humidity": LATEST_WEATHER["humidity"]
-                })
-                rows_written += 1
-            except Exception as e:
-                logger.error(f"Failed to upsert DB for record {r['station_name']}: {e}")
-
-        # Step 4.5 - Process FIRMS data
-        firms_anomalies = fetch_firms_data()
-        ward_anomaly_counts = {}
-        for anomaly in firms_anomalies:
-            try:
-                ward_sql = text("SELECT id FROM wards WHERE ST_Contains(geometry, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1")
-                ward_id = conn.execute(ward_sql, {"lon": anomaly["lon"], "lat": anomaly["lat"]}).scalar()
-                if ward_id is not None:
-                    ward_anomaly_counts[ward_id] = ward_anomaly_counts.get(ward_id, 0) + 1
-            except Exception:
-                pass
-                
-        # Step 5 - Hotspot Detection
-        try:
-            hotspot_sql = text("""
-                SELECT s.name, s.lat, s.lon, r.aqi, r.pm25
-                FROM readings r
-                JOIN stations s ON r.station_id = s.id
-                WHERE r.timestamp > NOW() - INTERVAL '2 hours'
-                AND r.aqi > 150
-                ORDER BY r.aqi DESC
-                LIMIT 10
-            """)
-            hotspots = conn.execute(hotspot_sql).mappings().all()
-            
-            insert_hotspot_sql = text("""
-                INSERT INTO hotspots (ward_id, geometry, attributed_source, confidence_score, detected_at, thermal_anomaly_count)
-                VALUES (
-                    :ward_id,
-                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
-                    'unknown',
-                    0.0,
-                    NOW(),
-                    :anomaly_count
-                )
-                ON CONFLICT DO NOTHING
-            """)
-            for h in hotspots:
-                ward_sql = text("SELECT id FROM wards WHERE ST_Contains(geometry, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1")
-                ward_id = conn.execute(ward_sql, {"lon": h["lon"], "lat": h["lat"]}).scalar()
-                logger.info(
-                            f"{h['name']} | AQI={h['aqi']} | ward_id={ward_id}"
-                            )
-                if ward_id is not None:
-                    logger.info(f"Inserting hotspot for {h['name']}")
-                    logger.info("Hotspot inserted")
-                    anomaly_count = ward_anomaly_counts.get(ward_id, 0)
-                    result=conn.execute(insert_hotspot_sql, {"ward_id": ward_id, "lon": h["lon"], "lat": h["lat"], "anomaly_count": anomaly_count})
-                    logger.info(f"Rows inserted = {result.rowcount}")
-                    
-        except Exception as e:
-            logger.error(f"Failed to detect/insert hotspots: {e}")
-
-    logger.info(f"Ingestion finished, {rows_written} rows written to DB")
-    
-    # TODO: FIRMS integration
 
 if __name__ == "__main__":
     run_ingestion()

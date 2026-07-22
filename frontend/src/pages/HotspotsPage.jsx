@@ -1,15 +1,15 @@
 import { useState, useMemo, useEffect } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from 'react-leaflet';
 import { getAqiColor, getAqiBadgeClass, getAqiLabel, SOURCE_TYPES } from '../utils/aqi';
-import { postAttribution, getModelReport, getHotspots } from '../api/client';
+import { postAttribution, getHotspotFeatures, getHotspots } from '../api/client';
 import 'leaflet/dist/leaflet.css';
 
 const FILTER_OPTIONS = [
   { key: 'all',          label: 'All Sources' },
-  { key: 'vehicular',    label: '🚗 Vehicular' },
+  { key: 'traffic',      label: '🚗 Traffic' },
   { key: 'construction', label: '🏗 Construction' },
   { key: 'industrial',   label: '🏭 Industrial' },
-  { key: 'agricultural', label: '🌾 Agricultural' },
+  { key: 'stubble_burning', label: '🌾 Stubble burning' },
 ];
 
 export default function HotspotsPage() {
@@ -47,12 +47,6 @@ export default function HotspotsPage() {
   const [attribution, setAttribution] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [modelReport, setModelReport] = useState(null);
-
-  useEffect(() => {
-    getModelReport().then(res => setModelReport(res)).catch(console.error);
-  }, []);
-
   useEffect(() => {
     if (!selectedHotspot) {
       setAttribution(null);
@@ -63,33 +57,10 @@ export default function HotspotsPage() {
     setIsLoading(true);
     setError(null);
     
-    // Map to realistic mock features based on pre-assigned source type
-    const base = {
-      ward: selectedHotspot.zone,
-      pm25: selectedHotspot.aqi * 0.7,
-      traffic_density_idx: 0.2,
-      construction_permit_density: 0.1,
-      industrial_stack_count: 0,
-      thermal_anomaly_count: 0,
-      dust_landuse_pct: 0.1,
-    };
-    
-    if (selectedHotspot.source === 'vehicular') {
-      base.traffic_density_idx = 0.95;
-    } else if (selectedHotspot.source === 'construction') {
-      base.construction_permit_density = 0.85;
-      base.dust_landuse_pct = 0.7;
-    } else if (selectedHotspot.source === 'industrial') {
-      base.industrial_stack_count = 8;
-      base.thermal_anomaly_count = 3;
-    } else if (selectedHotspot.source === 'agricultural') {
-      base.thermal_anomaly_count = 12;
-      base.dust_landuse_pct = 0.5;
-    }
-
     async function fetchAttr() {
       try {
-        const res = await postAttribution(base);
+        const features = await getHotspotFeatures(selectedHotspot.id);
+        const res = await postAttribution({ ...features, hotspot_id: Number(selectedHotspot.id) });
         if (mounted) {
           setAttribution(res);
           setIsLoading(false);
@@ -102,8 +73,8 @@ export default function HotspotsPage() {
       }
     }
     
-    const t = setTimeout(fetchAttr, 500); // delay to show loading state
-    return () => { mounted = false; clearTimeout(t); };
+    fetchAttr();
+    return () => { mounted = false; };
   }, [selectedHotspot]);
 
   return (
@@ -247,7 +218,7 @@ export default function HotspotsPage() {
                         </span>
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', background: 'var(--color-bg-primary)', padding: '8px', borderRadius: '4px' }}>
-                        <strong>Evidence:</strong> {attribution.evidence.join(' ')}
+                        <strong>Evidence:</strong> {Object.entries(attribution.evidence || {}).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join(' · ') || 'No feature explanation available.'}
                       </div>
                     </div>
                   ) : null}

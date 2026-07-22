@@ -42,18 +42,6 @@ const [dashboardData, setDashboardData] = useState({
 ]);
 
 const values = Object.values(trends);
-
-setDashboardData({
-    wardTrends: trends,
-    hotspots,
-    cityAqi:
-        values.length > 0
-            ? Math.round(
-                values.reduce((s, v) => s + v.avg_aqi, 0) /
-                values.length
-              )
-            : null,
-});
 if (mounted) {
     setDashboardData({
         wardTrends: trends,

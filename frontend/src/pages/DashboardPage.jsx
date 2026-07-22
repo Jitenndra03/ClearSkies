@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useCondition } from '../components/layout/Layout';
-import CanvasMap from '../components/CanvasMap';
+import LiveMap from '../components/LiveMap';
+import { getRecommendations } from '../api/client';
 
 /**
  * Get CPCB severity color for an AQI value.
@@ -34,11 +35,10 @@ function getAqiBadgeBg(aqi) {
 }
 
 export default function DashboardPage() {
-  const { conditionKey, condition } = useCondition();
+  const { condition } = useCondition();
   const { dashboardData } = useOutletContext();
 
 const {
-    wardTrends,
     hotspots,
     cityAqi
 } = dashboardData;
@@ -51,6 +51,7 @@ const {
         id: h.id,
 
         name: h.zone,
+        zone: h.zone,
 
         aqi: h.aqi,
 
@@ -78,6 +79,17 @@ displayWards.length
         (a,b)=>a.aqi>b.aqi?a:b
       )
     : null;
+  const [recommendations, setRecommendations] = useState([]);
+
+  useEffect(() => {
+    if (!topHotspot?.zone) {
+      setRecommendations([]);
+      return;
+    }
+    getRecommendations(topHotspot.zone)
+      .then((result) => setRecommendations(result.actions || []))
+      .catch(() => setRecommendations([]));
+  }, [topHotspot?.zone]);
   const now = new Date();
   const timestamp = now.toLocaleString('en-IN', {
     day: 'numeric', month: 'short', year: 'numeric',
@@ -154,13 +166,17 @@ displayWards.length
         <div className="right-column">
           {/* Map panel */}
           <div className="map-panel">
-            <CanvasMap hotspots={displayWards} conditionColor={condition.color} />
+            <LiveMap hotspots={displayWards} />
           </div>
 
           {/* Actions strip */}
           <div className="actions-panel">
-            <div className="actions-title">"No live recommendations available"</div>
-            
+            <div className="actions-title">Live recommended actions</div>
+            {recommendations.length ? recommendations.map((item) => (
+              <div key={item.action} style={{ fontSize: '0.8125rem', marginTop: '8px' }}>
+                {item.action} <span style={{ color: 'var(--color-text-muted)' }}>· {item.urgency_hours}h</span>
+              </div>
+            )) : <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)', marginTop: '8px' }}>No recommendation is available until a live forecast and hotspot are available.</div>}
           </div>
         </div>
       </div>

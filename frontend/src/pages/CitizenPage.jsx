@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { CITIZEN } from '../data/mockData';
 import { getAqiColor, getAqiLabel, getAqiBadgeClass } from '../utils/aqi';
-import { postAdvisory, postChatQuery, getWardTrends } from '../api/client';
+import { postAdvisory, postChatQuery, getWardTrends, getWards, getHotspots } from '../api/client';
 import { useTheme } from '../hooks/useTheme';
 
 export default function CitizenPage() {
@@ -16,23 +15,36 @@ export default function CitizenPage() {
   const [wardTrend, setWardTrend] = useState(null);
   const contentRef = useRef(null);
 
-  const data = CITIZEN[lang];
-  const aqiColor = getAqiColor(data.aqi);
+  const [wards, setWards] = useState([]);
+  const [selectedWard, setSelectedWard] = useState(null);
+  const [hotspot, setHotspot] = useState(null);
+  const aqi = selectedWard?.aqi || 0;
+  const aqiColor = getAqiColor(aqi);
 
   const [advisoryMsg, setAdvisoryMsg] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([getWards(), getHotspots()]).then(([wardItems, hotspots]) => {
+      if (!mounted) return;
+      setWards(wardItems);
+      setSelectedWard(wardItems[0] || null);
+      setHotspot(hotspots.find((item) => item.zone === wardItems[0]?.name) || null);
+    }).catch(() => { if (mounted) setIsLoading(false); });
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
     setIsLoading(true);
-    setError(null);
     
     async function fetchTrend() {
       try {
-        const t = await getWardTrends(data.wardName);
+        if (!selectedWard) return;
+        const t = await getWardTrends(selectedWard.name);
         if (mounted) setWardTrend(t);
-      } catch(e) {
+      } catch {
         // ignore error
       }
     }
@@ -41,22 +53,20 @@ export default function CitizenPage() {
       try {
         const result = await postAdvisory({
           user_id: 'demo',
-          ward: data.wardName,
+          ward: selectedWard.name,
           language: lang,
-          forecast_aqi: data.aqi,
+          forecast_aqi: aqi,
         });
         if (mounted) {
           setAdvisoryMsg(result.message);
           setIsLoading(false);
         }
-      } catch (err) {
+      } catch {
         if (mounted) {
           console.error('Failed to fetch advisory:', err);
           setError(err.message);
           setIsLoading(false);
-          setAdvisoryMsg(lang === 'en' 
-            ? 'The air in your area is moderately polluted today. People with respiratory conditions may experience discomfort during prolonged outdoor activity.' 
-            : 'आपके क्षेत्र में आज हवा की गुणवत्ता मध्यम रूप से प्रदूषित है। श्वसन रोगों वाले लोगों को लंबे समय तक बाहरी गतिविधियों में असुविधा हो सकती है।');
+          setAdvisoryMsg(lang === 'en' ? 'Live advisory is currently unavailable.' : 'लाइव सलाह अभी उपलब्ध नहीं है।');
         }
       }
     }
@@ -65,17 +75,17 @@ export default function CitizenPage() {
     const t = setTimeout(() => {
       fetchAdvisory();
       fetchTrend();
-    }, 300);
+    }, 0);
     
     return () => { 
       mounted = false; 
       clearTimeout(t);
     };
-  }, [lang, data.wardName, data.aqi]);
+  }, [lang, selectedWard, aqi]);
 
   useEffect(() => {
-    setMessages([{ role: 'assistant', content: CITIZEN.chatResponse[lang], citation: CITIZEN.chatCitation }]);
-  }, [lang]);
+    setMessages([]);
+  }, [lang, selectedWard?.name]);
 
   const handleChatSubmit = async (e) => {
     e?.preventDefault();
@@ -89,11 +99,11 @@ export default function CitizenPage() {
     try {
       const response = await postChatQuery({
         query,
-        ward: data.wardName,
+        ward: selectedWard?.name,
         language: lang,
-        aqi: data.aqi,
-        source: data.source || 'Unknown',
-        confidence: data.confidence || 0.0,
+        aqi,
+        source: hotspot?.source || 'Unknown',
+        confidence: (hotspot?.confidence || 0) / 100,
         risk_level: 'Unknown',
         peak_month: wardTrend?.peak_month || 'Unknown',
         weekday_delta: wardTrend?.weekday_vs_weekend_delta || 0.0
@@ -102,9 +112,9 @@ export default function CitizenPage() {
       setMessages(prev => [...prev, { 
         role: 'assistant', 
         content: response.answer, 
-        citation: '*Source: ClearSkies AQI Monitor*' 
+        citation: response.citations?.map((item) => item.title).join(' · ') || response.citation || 'ClearSkies AQI Monitor'
       }]);
-    } catch (err) {
+    } catch {
       const fallback = lang === 'en' 
         ? "Unable to connect. Please check the AQI display for current conditions." 
         : "कनेक्ट करने में समस्या हो रही है। कृपया AQI डिस्प्ले देखें।";
@@ -179,17 +189,28 @@ export default function CitizenPage() {
           className="lang-fade-active"
           style={{ animationDelay: '0ms' }}
         >
+          <div className="form-group" style={{ maxWidth: '320px', margin: '0 auto 16px' }}>
+            <label className="form-label">{lang === 'en' ? 'Your ward' : 'आपका वार्ड'}</label>
+            <select className="form-select" value={selectedWard?.name || ''}
+              onChange={(event) => {
+                const ward = wards.find((item) => item.name === event.target.value);
+                setSelectedWard(ward || null);
+                getHotspots().then((items) => setHotspot(items.find((item) => item.zone === ward?.name) || null)).catch(() => setHotspot(null));
+              }}>
+              {wards.map((ward) => <option key={ward.name} value={ward.name}>{ward.name}</option>)}
+            </select>
+          </div>
           {/* Large AQI display */}
           <div className="citizen-aqi-display">
             <div className="citizen-aqi-value" style={{ color: aqiColor === '#FFFF00' ? '#E6E600' : aqiColor }}>
-              {data.aqi}
+              {aqi || '—'}
             </div>
             <div className="citizen-aqi-label">
-              {getAqiLabel(data.aqi)}
+              {aqi ? getAqiLabel(aqi) : 'No live reading'}
             </div>
             <div style={{ marginTop: '8px' }}>
               <span className={`aqi-badge ${getAqiBadgeClass(data.aqi)}`}>
-                {data.wardName}
+                {selectedWard?.name || 'Loading ward…'}
               </span>
             </div>
           </div>
@@ -209,7 +230,11 @@ export default function CitizenPage() {
               {lang === 'en' ? 'Guidance for Vulnerable Groups' : 'संवेदनशील समूहों के लिए मार्गदर्शन'}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {data.groups.map((group, i) => (
+            {[
+              { icon: '👶', title: lang === 'en' ? 'Children' : 'बच्चे', advice: lang === 'en' ? 'Reduce prolonged outdoor activity when AQI is poor or worse.' : 'AQI खराब या अधिक होने पर लंबे समय तक बाहर न रहें।' },
+              { icon: '👴', title: lang === 'en' ? 'Elderly' : 'बुज़ुर्ग', advice: lang === 'en' ? 'Limit exertion outdoors and follow the live advisory.' : 'बाहर मेहनत वाले काम सीमित करें और लाइव सलाह मानें।' },
+              { icon: '👷', title: lang === 'en' ? 'Outdoor workers' : 'बाहरी कर्मचारी', advice: lang === 'en' ? 'Use appropriate respiratory protection and take indoor breaks.' : 'उचित मास्क पहनें और अंदर ब्रेक लें।' },
+            ].map((group, i) => (
                 <div key={i} className="group-tag">
                   <div className="group-tag-icon">{group.icon}</div>
                   <div>
