@@ -258,9 +258,9 @@ export default function CitizenPage() {
 
           {/* Ask why button */}
           <button
-            className="btn btn-secondary"
-            style={{ width: '100%' }}
+            className={`citizen-chat-trigger${chatOpen ? ' hidden' : ''}`}
             onClick={() => setChatOpen(true)}
+            aria-label={lang === 'en' ? 'Open air-quality assistant' : 'वायु गुणवत्ता सहायक खोलें'}
           >
             {lang === 'en' ? '💬 Ask why the air quality is this way' : '💬 हवा की गुणवत्ता ऐसी क्यों है?'}
           </button>

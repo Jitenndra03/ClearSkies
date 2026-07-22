@@ -68,14 +68,16 @@ const {
 , [hotspots]);  
 
   const sortedWards = useMemo(
-    () => [...displayWards].sort((a, b) => b.aqi - a.aqi),
-    [displayWards]
+    () => displayWards
+      .filter((ward) => ward.aqi >= condition.min && ward.aqi <= condition.max)
+      .sort((a, b) => b.aqi - a.aqi),
+    [displayWards, condition]
   );
 
 
-  const topHotspot =
-displayWards.length
-    ? displayWards.reduce(
+const topHotspot =
+sortedWards.length
+    ? sortedWards.reduce(
         (a,b)=>a.aqi>b.aqi?a:b
       )
     : null;
@@ -103,7 +105,7 @@ displayWards.length
         <div>
           <h1 className="page-title">Air Quality Overview</h1>
           <p className="page-subtitle">
-            Real-time monitoring across {displayWards.length} wards in New Delhi
+            Showing {sortedWards.length} of {displayWards.length} wards in the {condition.label} AQI band
           </p>
         </div>
         <span className="page-timestamp">Last updated: {timestamp}</span>
@@ -140,7 +142,7 @@ displayWards.length
         <div className="ward-panel">
           <div className="ward-panel-title">Wards by Severity</div>
           <div className="ward-list">
-            {sortedWards.map((ward) => (
+            {sortedWards.length ? sortedWards.map((ward) => (
               <div key={ward.id} className="ward-row">
                 <div className="ward-row-left">
                   <span className="ward-row-name">{ward.name}</span>
@@ -158,7 +160,7 @@ displayWards.length
                   {ward.aqi}
                 </span>
               </div>
-            ))}
+            )) : <div className="empty-state">No live wards are currently in the {condition.label} AQI band.</div>}
           </div>
         </div>
 
@@ -166,7 +168,7 @@ displayWards.length
         <div className="right-column">
           {/* Map panel */}
           <div className="map-panel">
-            <LiveMap hotspots={displayWards} />
+            <LiveMap hotspots={sortedWards} />
           </div>
 
           {/* Actions strip */}
