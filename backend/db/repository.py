@@ -473,10 +473,20 @@ def fetch_all_active_station_ids(city: str = None, ward_name: str = None) -> lis
 
 
 def insert_alert_log(recipient: str, channel: str, message: str, risk_level: str, status: str = "sent") -> None:
-    """Logs a dispatched notification (advisory or emergency alert) for the Alerts feed."""
+    """Logs a dispatched notification, with a 30-minute duplicate cooldown."""
     query = text("""
         INSERT INTO alerts_log (recipient, channel, message, risk_level, status)
-        VALUES (:recipient, :channel, :message, :risk_level, :status)
+        SELECT :recipient, :channel, :message, :risk_level, :status
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM alerts_log
+            WHERE recipient = :recipient
+              AND channel = :channel
+              AND message = :message
+              AND risk_level = :risk_level
+              AND status = :status
+              AND dispatched_at >= now() - INTERVAL '30 minutes'
+        )
     """)
     with get_engine().begin() as conn:
         conn.execute(query, {
@@ -490,7 +500,12 @@ def fetch_recent_alerts(limit: int = 50) -> pd.DataFrame:
     citizen-facing Alerts page (Section 11)."""
     query = text("""
         SELECT recipient, channel, message, risk_level, status, dispatched_at
-        FROM alerts_log
+        FROM (
+            SELECT DISTINCT ON (recipient, channel, message, risk_level, status)
+                   recipient, channel, message, risk_level, status, dispatched_at
+            FROM alerts_log
+            ORDER BY recipient, channel, message, risk_level, status, dispatched_at DESC
+        ) AS latest_alerts
         ORDER BY dispatched_at DESC
         LIMIT :limit
     """)

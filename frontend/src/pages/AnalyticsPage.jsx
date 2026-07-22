@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getAnalytics, getAlerts, getMultiCityComparison } from '../api/client';
+import { IconBell } from '../components/Icons';
 
 export default function AnalyticsPage() {
   const [analytics, setAnalytics] = useState(null);
@@ -34,7 +35,7 @@ export default function AnalyticsPage() {
     </div>
     <div className="section-title">Recent alerts</div>
     <div className="card-static" style={{ padding: '16px' }}>
-      {alerts.length ? alerts.map((alert, index) => <div key={`${alert.dispatched_at}-${index}`} className="ward-row"><div><div className="ward-row-name">{alert.recipient} · {alert.risk_level}</div><div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>{alert.message}</div></div><span>{alert.channel}</span></div>) : <div className="empty-state">No alerts have been dispatched.</div>}
+      {alerts.length ? alerts.map((alert, index) => <div key={`${alert.dispatched_at}-${index}`} className="ward-row"><div><div className="ward-row-name">{alert.recipient} · {alert.risk_level}</div><div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>{alert.message}</div></div><span title="In-app alert" aria-label="In-app alert" style={{ display: 'inline-flex', color: 'var(--color-accent)' }}><IconBell width="18" height="18" /></span></div>) : <div className="empty-state">No alerts have been dispatched.</div>}
     </div>
   </div>;
 }

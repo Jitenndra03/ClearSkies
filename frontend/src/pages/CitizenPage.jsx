@@ -29,16 +29,23 @@ export default function CitizenPage() {
 
   useEffect(() => {
     let mounted = true;
-    Promise.all([getWards(), getHotspots()]).then(([wardItems, hotspots]) => {
+    getWards().then((wardItems) => {
       if (!mounted) return;
       setWards(wardItems);
-      setSelectedWard(wardItems[0] || null);
-      setHotspot(hotspots.find((item) => item.zone === wardItems[0]?.name) || null);
+      setSelectedWard(null);
+      setHotspot(null);
     }).catch(() => { if (mounted) setIsLoading(false); });
     return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
+    if (!selectedWard) {
+      setWardTrend(null);
+      setAdvisoryMsg(lang === 'en' ? 'Select your ward to receive a live advisory.' : 'लाइव सलाह पाने के लिए अपना वार्ड चुनें।');
+      setIsLoading(false);
+      return undefined;
+    }
+
     let mounted = true;
     setIsLoading(true);
     
@@ -199,6 +206,7 @@ export default function CitizenPage() {
                 setSelectedWard(ward || null);
                 getHotspots().then((items) => setHotspot(items.find((item) => item.zone === ward?.name) || null)).catch(() => setHotspot(null));
               }}>
+              <option value="" disabled>{lang === 'en' ? 'Select your ward' : 'अपना वार्ड चुनें'}</option>
               {wards.map((ward) => <option key={ward.name} value={ward.name}>{ward.name}</option>)}
             </select>
           </div>
