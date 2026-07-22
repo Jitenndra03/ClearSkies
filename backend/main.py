@@ -114,8 +114,12 @@ def get_hotspots():
         from db.repository import fetch_active_hotspots_for_map
         import pandas as pd
         df = fetch_active_hotspots_for_map()
+        
+        # Deduplicate by ward, keeping the hotspot with highest AQI
+        df_dedup = df.loc[df.groupby('ward')['aqi'].idxmax()]
+        
         hotspots_list = []
-        for _, row in df.iterrows():
+        for _, row in df_dedup.iterrows():
             hotspots_list.append({
                 "id": str(row["hotspot_id"]),
                 "zone": row["ward"],
@@ -127,7 +131,6 @@ def get_hotspots():
             })
         return hotspots_list
     else:
-        # User explicitly requested real-time data, so if the DB is down, return empty
         return []
 
 

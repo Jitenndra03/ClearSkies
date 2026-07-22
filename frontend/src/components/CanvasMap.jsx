@@ -101,7 +101,7 @@ export default function CanvasMap({ hotspots, conditionColor }) {
 
       // Pulsing AQI markers
       hotspots.forEach((hotspot) => {
-        const [x, y] = project(hotspot.lat, hotspot.lng, w, hotspot);
+        const [x, y] = project(hotspot.lat, hotspot.lng, w, h);
         const color = getMarkerColor(hotspot.aqi);
         const pulsePhase = (t * 0.025) % (Math.PI * 2);
         const pulseScale = 1 + Math.sin(pulsePhase) * 0.35;
